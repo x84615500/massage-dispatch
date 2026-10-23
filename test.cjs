@@ -46,7 +46,7 @@ const fs=require('fs'),assert=require('assert/strict');
  const j=await p.evaluate(()=>JSON.parse(localStorage.getItem('massage-dispatch-01')).jobs[0]);assert.equal(j.bodyMinutes,0);assert.equal(j.footMinutes,55);await p.reload();assert.equal(await p.locator('#storage-warning').isVisible(),false);assert.match(await p.locator('#today-status').innerText(),/15:05/);
  });
  await test('組合工作總時間與一次整理',async p=>{
- await goto(p);await add(p,'1');await confirm(p);await click(p,'show-work');await fill(p,'workStaff','1');await p.locator('#workService').selectOption('both');await fill(p,'workUnits','6');await fill(p,'workFoot','40');assert.match(await p.locator('#workPreview').innerText(),/共100分鐘/);await p.locator('#workForm [type=submit]').click();assert.match(await p.locator('#message').innerText(),/15:40/);assert.match(await p.locator('#today-status').innerText(),/15:50/);
+ await goto(p);await add(p,'1');await confirm(p);await click(p,'show-work');await fill(p,'workStaff','1');await p.locator('#workService').selectOption('both');await fill(p,'workUnits','0');await p.locator('#workForm [type=submit]').click();assert.equal(await p.evaluate(()=>JSON.parse(localStorage.getItem('massage-dispatch-01')).jobs.length),0);await fill(p,'workUnits','6');await fill(p,'workFoot','40');assert.match(await p.locator('#workPreview').innerText(),/共100分鐘/);await p.locator('#workForm [type=submit]').click();assert.match(await p.locator('#message').innerText(),/15:40/);assert.match(await p.locator('#today-status').innerText(),/15:50/);
  });
  await test('腳底無效級距拒絕與70分鐘有效',async p=>{
  await goto(p);await add(p,'1');await confirm(p);await click(p,'show-work');await fill(p,'workStaff','1');await p.locator('#workService').selectOption('foot');
@@ -72,6 +72,7 @@ const fs=require('fs'),assert=require('assert/strict');
 
  await browser.close();fs.writeFileSync(__dirname+'/test-results.txt',results.join('\n')+'\n');console.log(results.join('\n'));
 })().catch(e=>{console.error(e);process.exit(1)});
+
 
 
 
