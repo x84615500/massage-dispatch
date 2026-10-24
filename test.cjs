@@ -116,20 +116,35 @@ const fs=require('fs'),assert=require('assert/strict');
  const r={confirmed:true,people:[{id:'1',from:'11:00',to:'22:00'},{id:'2',from:'11:00',to:'22:00'}]};
  const b=booking('15:00','');b.guests=[{bodyMinutes:30,footMinutes:0,staff:''}];
  await seed(p,{rosters:{'2026-10-23':r},bookings:[b],jobs:[{date:'2026-10-23',staff:'1',start:840,units:6}]});
- await click(p,'toggle-time-search');await fill(p,'searchTime','1435');await fill(p,'searchMinutes','20');await p.locator('#timeSearchForm [type=submit]').click();assert.match(await p.locator('#time-search-results').innerText(),/沒有可完整安排/);
- await fill(p,'searchTime','1510');await fill(p,'searchMinutes','30');await p.locator('#timeSearchForm [type=submit]').click();assert.match(await p.locator('#time-search-results').innerText(),/可工作師傅：1號$/);await fill(p,'searchTime','1600');await p.locator('#timeSearchForm [type=submit]').click();assert.match(await p.locator('#time-search-results').innerText(),/可工作師傅：1號、2號/);
+ await click(p,'toggle-time-search');await fill(p,'searchTime','1435');await fill(p,'searchMinutes','2');await p.locator('#timeSearchForm [type=submit]').click();assert.match(await p.locator('#time-search-results').innerText(),/沒有可完整安排/);
+ await fill(p,'searchTime','1510');await fill(p,'searchMinutes','3');await p.locator('#timeSearchForm [type=submit]').click();assert.match(await p.locator('#time-search-results').innerText(),/可工作師傅：1號$/);await fill(p,'searchTime','1600');await p.locator('#timeSearchForm [type=submit]').click();assert.match(await p.locator('#time-search-results').innerText(),/可工作師傅：1號、2號/);
  const before=await p.evaluate(()=>localStorage.getItem('massage-dispatch-01'));await click(p,'close-time-search');assert.equal(await p.locator('#toggle-time-search').evaluate(e=>document.activeElement===e),true);assert.equal(await p.evaluate(()=>localStorage.getItem('massage-dispatch-01')),before);
  });
  await test('查詢缺班表、過去時間、無效時間與數字驗證',async p=>{
- await goto(p);await click(p,'toggle-time-search');await fill(p,'searchTime','1500');await fill(p,'searchMinutes','20');await p.locator('#timeSearchForm [type=submit]').click();assert.match(await p.locator('#time-search-results').innerText(),/班表尚未確認/);
+ await goto(p);await click(p,'toggle-time-search');await fill(p,'searchTime','1500');await fill(p,'searchMinutes','2');await p.locator('#timeSearchForm [type=submit]').click();assert.match(await p.locator('#time-search-results').innerText(),/班表尚未確認/);
  await add(p,'1');await confirm(p);await fill(p,'searchTime','1359');await p.locator('#timeSearchForm [type=submit]').click();assert.match(await p.locator('#time-search-results').innerText(),/時間已過/);
- await fill(p,'searchTime','2360');await p.locator('#timeSearchForm [type=submit]').click();assert.match(await p.locator('#time-search-results').innerText(),/有效四位數/);
- await fill(p,'searchTime','1500');await fill(p,'searchMinutes','0');await p.locator('#timeSearchForm [type=submit]').click();assert.match(await p.locator('#time-search-results').innerText(),/至少20分鐘/);
- await fill(p,'searchMinutes','40');await p.locator('#timeSearchForm [type=submit]').click();assert.match(await p.locator('#time-search-results').innerText(),/1號/);await fill(p,'searchMinutes','55');assert.match(await p.locator('#time-search-results').innerText(),/條件已變更/);
+ await fill(p,'searchTime','2360');await p.locator('#timeSearchForm [type=submit]').click();assert.match(await p.locator('#time-search-results').innerText(),/有效時間/);
+ await fill(p,'searchTime','1500');await fill(p,'searchMinutes','0');await p.locator('#timeSearchForm [type=submit]').click();assert.match(await p.locator('#time-search-results').innerText(),/至少2單位/);
+ await fill(p,'searchMinutes','4');await p.locator('#timeSearchForm [type=submit]').click();assert.match(await p.locator('#time-search-results').innerText(),/1號/);await fill(p,'searchMinutes','5');assert.match(await p.locator('#time-search-results').innerText(),/條件已變更/);
+ });
+
+ await test('查詢9單位等於90分鐘且保留整理',async p=>{
+ const r={confirmed:true,people:[{id:'1',from:'14:00',to:'15:40'}]};
+ await seed(p,{rosters:{'2026-10-23':r},bookings:[],jobs:[]});await click(p,'toggle-time-search');await fill(p,'searchTime','1400');await fill(p,'searchMinutes','9');await p.locator('#timeSearchForm [type=submit]').click();assert.match(await p.locator('#time-search-results').innerText(),/按摩90分鐘＋整理10分鐘｜可工作師傅：1號/);
+ await fill(p,'searchMinutes','10');await p.locator('#timeSearchForm [type=submit]').click();assert.match(await p.locator('#time-search-results').innerText(),/沒有可完整安排/);
+ assert.equal(await p.locator('label[for=searchMinutes]').innerText(),'按摩時數（1單位十分鐘）');assert.equal(await p.locator('#searchHint').innerText(),'1400表示下午兩點。');
+ });
+ await test('當日每筆預約皆為三級標題，包含多人及狀態',async p=>{
+ const b1=booking('15:00','1'),b2={...booking('16:00',''),id:'b2',status:'pending',guests:[{units:2,staff:''},{units:3,staff:''}]};
+ await seed(p,{rosters:{'2026-10-23':roster},bookings:[b1,b2],jobs:[]});await click(p,'tab-booking');
+ assert.equal(await p.locator('#day-list').getByRole('heading',{level:3}).count(),2);
+ assert.deepEqual(await p.locator('#day-list h3').allTextContents(),['15:00｜1人','16:00｜2人']);assert.equal(await p.locator('#day-list article').count(),2);
+ await p.locator('[data-edit]:visible').first().click();assert.equal(await p.locator('#bookTimeHint').innerText(),'1400表示下午兩點。');
  });
 
  await browser.close();fs.writeFileSync(__dirname+'/test-results.txt',results.join('\n')+'\n');console.log(results.join('\n'));
 })().catch(e=>{console.error(e);process.exit(1)});
+
 
 
 
