@@ -142,8 +142,21 @@ const fs=require('fs'),assert=require('assert/strict');
  await p.locator('[data-edit]:visible').first().click();assert.equal(await p.locator('#bookTimeHint').innerText(),'1400表示下午兩點。');
  });
 
+ await test('查詢每次展開帶入當下時間、秒數不誤判與清除舊結果',async p=>{
+ await seed(p,{rosters:{'2026-10-23':roster},bookings:[],jobs:[]});
+ await p.evaluate(()=>{window.Date=class extends Date{getHours(){return 14}getMinutes(){return 35}getSeconds(){return 42}}});
+ await click(p,'toggle-time-search');assert.equal(await p.locator('#searchTime').inputValue(),'1435');await fill(p,'searchMinutes','2');await p.locator('#timeSearchForm [type=submit]').click();assert.match(await p.locator('#time-search-results').innerText(),/1號/);
+ await fill(p,'searchTime','1600');await click(p,'close-time-search');await p.evaluate(()=>{window.Date=class extends Date{getHours(){return 14}getMinutes(){return 36}getSeconds(){return 15}}});await click(p,'toggle-time-search');assert.equal(await p.locator('#searchTime').inputValue(),'1436');assert.equal(await p.locator('#time-search-results').isVisible(),false);await fill(p,'searchTime','1700');assert.equal(await p.locator('#searchTime').inputValue(),'1700');
+ });
+ await test('時間說明只由欄位描述提供，沒有獨立可見提示',async p=>{
+ await goto(p);await click(p,'toggle-time-search');assert.equal(await p.locator('#searchHint').isVisible(),false);await p.locator('#searchTime').evaluate(el=>{if(el.getAttribute('aria-describedby')!=='searchHint')throw Error('missing description')});
+ await click(p,'tab-booking');await click(p,'new-day');assert.equal(await p.locator('#bookTimeHint').isVisible(),false);assert.equal(await p.locator('#bookTime').getAttribute('aria-describedby'),'bookTimeHint');
+ assert.equal(await p.locator('#booking-editor').getByText('1400表示下午兩點。',{exact:true}).isVisible(),false);
+ });
+
  await browser.close();fs.writeFileSync(__dirname+'/test-results.txt',results.join('\n')+'\n');console.log(results.join('\n'));
 })().catch(e=>{console.error(e);process.exit(1)});
+
 
 
 
