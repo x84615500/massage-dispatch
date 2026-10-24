@@ -10,7 +10,7 @@ const fs=require('fs'),assert=require('assert/strict');
  const url='http://massage.test/';
  const goto=p=>p.goto(url);
  const click=(p,id)=>p.locator('#'+id).click();
- const fill=(p,id,value)=>p.locator('#'+id).fill(value);
+ const fill=(p,id,value)=>p.locator('#'+id).fill(id==='bookTime'?value.replace(':',''):value);
  async function add(p,id){await fill(p,'addStaff',id);await p.locator('#addStaffForm button').click()}
  async function confirm(p){await click(p,'confirmToday')}
  async function work(p,id='1',u='2'){await click(p,'show-work');await fill(p,'workStaff',id);await fill(p,'workUnits',u);await p.locator('#workForm [type=submit]').click()}
@@ -81,7 +81,7 @@ const fs=require('fs'),assert=require('assert/strict');
  const shortRoster={confirmed:true,people:[{id:'1',from:'15:10',to:'16:00'}]};
  await seed(p,{rosters:{'2026-10-23':shortRoster},bookings:[],jobs:[]});await click(p,'tab-booking');await click(p,'new-day');await fill(p,'gStaff0','1');
  for(const [units,expected] of [['5',null],['4','15:10可開始'],['3','15:10–15:20可開始'],['2','15:10–15:30可開始']]){await fill(p,'gUnits0',units);await p.locator('[data-find-slots]').click();const result=await p.locator('[data-slot-results]').innerText();if(expected)assert.ok(result.includes(expected),result);else assert.match(result,/沒有能完整安排/)}
- await p.locator('[data-use-slot]').click();assert.equal(await p.locator('#bookTime').inputValue(),'15:10');assert.equal(await p.locator('#bookTime').evaluate(e=>document.activeElement===e),true);
+ await p.locator('[data-use-slot]').click();assert.equal(await p.locator('#bookTime').inputValue(),'1510');assert.equal(await p.locator('#bookTime').evaluate(e=>document.activeElement===e),true);
  await fill(p,'gUnits0','4');assert.match(await p.locator('[data-slot-results]').innerText(),/條件已變更/);assert.equal(await p.locator('[data-use-slot]').count(),0);
  });
  await test('未來空檔、未確認班表提示與編輯排除自身',async p=>{
@@ -101,8 +101,38 @@ const fs=require('fs'),assert=require('assert/strict');
  await fill(p,'bookCount','3');await p.locator('#bookCount').dispatchEvent('change');await fill(p,'gUnits1','2');await fill(p,'gUnits2','2');await p.locator('[data-find-slots]').first().click();assert.match(await p.locator('[data-slot-results]').first().innerText(),/沒有能完整安排/);
  });
 
+ await test('四位數預約時間新增、修改、複製與錯誤驗證',async p=>{
+ await goto(p);await click(p,'tab-booking');await click(p,'new-day');assert.equal(await p.locator('#bookTime').getAttribute('inputmode'),'numeric');
+ await fill(p,'bookTime','2460');await p.locator('#bookingForm [type=submit]').click();assert.equal(await p.locator('#booking-editor').isVisible(),true);assert.match(await p.locator('#message').innerText(),/請確認日期/);
+ await fill(p,'bookTime','1435');await p.locator('#bookingForm [type=submit]').click();assert.match(await p.locator('#day-list').innerText(),/14:35/);await p.locator('[data-edit]:visible').click();assert.equal(await p.locator('#bookTime').inputValue(),'1435');await click(p,'cancelEditor');
+ await p.evaluate(()=>Object.defineProperty(navigator,'clipboard',{value:{writeText:async t=>window.copied=t},configurable:true}));await click(p,'copy-day');assert.match(await p.evaluate(()=>window.copied),/14:35/);
+ });
+ await test('累計分鐘與上班狀態移至班表，空檔僅顯示師傅與時段',async p=>{
+ await seed(p,{rosters:{'2026-10-23':roster},bookings:[],jobs:[{date:'2026-10-23',staff:'1',start:780,units:2}]});
+ const text=await p.locator('#availability-list').innerText();assert.ok(!/當日已排|上班中|已下班|尚未上班|服務／整理中|空閒/.test(text),text);
+ await click(p,'toggle-roster');assert.match(await p.locator('#today-roster').innerText(),/當日已排20分鐘/);assert.match(await p.locator('#today-roster').innerText(),/上班中/);
+ });
+ await test('查指定時間列出完整可工作師傅、整理邊界與不指定容量',async p=>{
+ const r={confirmed:true,people:[{id:'1',from:'11:00',to:'22:00'},{id:'2',from:'11:00',to:'22:00'}]};
+ const b=booking('15:00','');b.guests=[{bodyMinutes:30,footMinutes:0,staff:''}];
+ await seed(p,{rosters:{'2026-10-23':r},bookings:[b],jobs:[{date:'2026-10-23',staff:'1',start:840,units:6}]});
+ await click(p,'toggle-time-search');await fill(p,'searchTime','1435');await fill(p,'searchMinutes','20');await p.locator('#timeSearchForm [type=submit]').click();assert.match(await p.locator('#time-search-results').innerText(),/沒有可完整安排/);
+ await fill(p,'searchTime','1510');await fill(p,'searchMinutes','30');await p.locator('#timeSearchForm [type=submit]').click();assert.match(await p.locator('#time-search-results').innerText(),/可工作師傅：1號$/);await fill(p,'searchTime','1600');await p.locator('#timeSearchForm [type=submit]').click();assert.match(await p.locator('#time-search-results').innerText(),/可工作師傅：1號、2號/);
+ const before=await p.evaluate(()=>localStorage.getItem('massage-dispatch-01'));await click(p,'close-time-search');assert.equal(await p.locator('#toggle-time-search').evaluate(e=>document.activeElement===e),true);assert.equal(await p.evaluate(()=>localStorage.getItem('massage-dispatch-01')),before);
+ });
+ await test('查詢缺班表、過去時間、無效時間與數字驗證',async p=>{
+ await goto(p);await click(p,'toggle-time-search');await fill(p,'searchTime','1500');await fill(p,'searchMinutes','20');await p.locator('#timeSearchForm [type=submit]').click();assert.match(await p.locator('#time-search-results').innerText(),/班表尚未確認/);
+ await add(p,'1');await confirm(p);await fill(p,'searchTime','1359');await p.locator('#timeSearchForm [type=submit]').click();assert.match(await p.locator('#time-search-results').innerText(),/時間已過/);
+ await fill(p,'searchTime','2360');await p.locator('#timeSearchForm [type=submit]').click();assert.match(await p.locator('#time-search-results').innerText(),/有效四位數/);
+ await fill(p,'searchTime','1500');await fill(p,'searchMinutes','0');await p.locator('#timeSearchForm [type=submit]').click();assert.match(await p.locator('#time-search-results').innerText(),/至少20分鐘/);
+ await fill(p,'searchMinutes','40');await p.locator('#timeSearchForm [type=submit]').click();assert.match(await p.locator('#time-search-results').innerText(),/1號/);await fill(p,'searchMinutes','55');assert.match(await p.locator('#time-search-results').innerText(),/條件已變更/);
+ });
+
  await browser.close();fs.writeFileSync(__dirname+'/test-results.txt',results.join('\n')+'\n');console.log(results.join('\n'));
 })().catch(e=>{console.error(e);process.exit(1)});
+
+
+
 
 
 
