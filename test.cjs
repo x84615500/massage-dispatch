@@ -9,7 +9,8 @@ const fs=require('fs'),assert=require('assert/strict');
  try{await run(page);assert.deepEqual(errors,[]);results.push('PASS '+name)}catch(e){results.push('FAIL '+name+': '+e.message);process.exitCode=1}finally{await context.close()}}
  const url='http://massage.test/';
  const goto=p=>p.goto(url);
- const click=(p,id)=>p.locator('#'+id).click();
+ const click=async(p,id)=>{await p.locator('#'+id).click();if(id==='new-day'||id==='new-future')await p.locator('#bookTime').fill('1730')};
+ const choose=(p,id,value)=>p.locator('#'+id+' input[value='+value+']').check();
  const fill=(p,id,value)=>p.locator('#'+id).fill(id==='bookTime'?value.replace(':',''):value);
  async function add(p,id){await fill(p,'addStaff',id);await p.locator('#addStaffForm button').click()}
  async function confirm(p){await click(p,'confirmToday')}
@@ -54,10 +55,10 @@ const fs=require('fs'),assert=require('assert/strict');
  await fill(p,'workFoot','70');await p.locator('#workForm [type=submit]').click();assert.match(await p.locator('#message').innerText(),/已安排70分鐘/);
  });
  await test('三人混合項目、個別時間、修改與簡化複製',async p=>{
- await goto(p);await click(p,'tab-booking');await click(p,'new-day');await p.locator('#bookService').selectOption('both');await fill(p,'bookUnits','6');await p.locator('#bookUnits').dispatchEvent('change');await fill(p,'bookFoot','55');await p.locator('#bookFoot').dispatchEvent('change');await fill(p,'bookCount','3');await p.locator('#bookCount').dispatchEvent('change');
- assert.equal(await p.locator('#gService2').inputValue(),'both');assert.equal(await p.locator('#gFoot2').inputValue(),'55');await p.locator('#gService0').selectOption('body');await fill(p,'gStaff0','1');await p.locator('#gService1').selectOption('foot');await fill(p,'gStaff1','8');await fill(p,'gFoot2','70');await p.locator('#bookingForm [type=submit]').click();
+ await goto(p);await click(p,'tab-booking');await click(p,'new-day');await choose(p,'bookService','both');await fill(p,'bookUnits','6');await p.locator('#bookUnits').dispatchEvent('change');await fill(p,'bookFoot','55');await p.locator('#bookFoot').dispatchEvent('change');await fill(p,'bookCount','3');await p.locator('#bookCount').dispatchEvent('change');
+ assert.equal(await p.locator('#gService2').evaluate(e=>e.value),'both');assert.equal(await p.locator('#gFoot2').inputValue(),'55');await choose(p,'gService0','body');await fill(p,'gStaff0','1');await choose(p,'gService1','foot');await fill(p,'gStaff1','8');await fill(p,'gFoot2','70');await p.locator('#bookingForm [type=submit]').click();
  assert.match(await p.locator('#day-list').innerText(),/身體60分鐘＋腳底70分鐘/);
- await p.locator('[data-edit]:visible').click();assert.equal(await p.locator('#gService0').inputValue(),'body');assert.equal(await p.locator('#gService1').inputValue(),'foot');assert.equal(await p.locator('#gService2').inputValue(),'both');assert.equal(await p.locator('#gFoot2').inputValue(),'70');await click(p,'cancelEditor');
+ await p.locator('[data-edit]:visible').click();assert.equal(await p.locator('#gService0').evaluate(e=>e.value),'body');assert.equal(await p.locator('#gService1').evaluate(e=>e.value),'foot');assert.equal(await p.locator('#gService2').evaluate(e=>e.value),'both');assert.equal(await p.locator('#gFoot2').inputValue(),'70');await click(p,'cancelEditor');
  await p.evaluate(()=>Object.defineProperty(navigator,'clipboard',{value:{writeText:async t=>window.copied=t},configurable:true}));await click(p,'copy-day');const copied=await p.evaluate(()=>window.copied);assert.ok(!/客[123]/.test(copied));for(const value of ['3人','身體60分鐘，指定1號','腳底55分鐘，指定8號','身體60分鐘＋腳底70分鐘，不指定'])assert.ok(copied.includes(value),value);
  await p.reload();await click(p,'tab-booking');assert.match(await p.locator('#day-list').innerText(),/腳底70分鐘/);
  });
@@ -67,7 +68,7 @@ const fs=require('fs'),assert=require('assert/strict');
  await p.locator('[data-edit]:visible').last().click();await fill(p,'bookTime','15:10');await p.locator('#bookingForm [type=submit]').click();await p.locator('[data-confirm]:visible').click();assert.match(await p.locator('#message').innerText(),/預約已確認/);
  });
  await test('舊單位紀錄相容、編輯與儲存',async p=>{
- await seed(p,{rosters:{'2026-10-23':roster},bookings:[booking()],jobs:[{date:'2026-10-23',staff:'1',start:700,units:2}]});assert.equal(await p.locator('#storage-warning').isVisible(),false);await click(p,'tab-booking');assert.match(await p.locator('#day-list').innerText(),/身體20分鐘/);await p.locator('[data-edit]:visible').click();assert.equal(await p.locator('#gService0').inputValue(),'body');assert.equal(await p.locator('#gUnits0').inputValue(),'2');await p.locator('#bookingForm [type=submit]').click();await p.reload();assert.equal(await p.locator('#storage-warning').isVisible(),false);
+ await seed(p,{rosters:{'2026-10-23':roster},bookings:[booking()],jobs:[{date:'2026-10-23',staff:'1',start:700,units:2}]});assert.equal(await p.locator('#storage-warning').isVisible(),false);await click(p,'tab-booking');assert.match(await p.locator('#day-list').innerText(),/身體20分鐘/);await p.locator('[data-edit]:visible').click();assert.equal(await p.locator('#gService0').evaluate(e=>e.value),'body');assert.equal(await p.locator('#gUnits0').inputValue(),'2');await p.locator('#bookingForm [type=submit]').click();await p.reload();assert.equal(await p.locator('#storage-warning').isVisible(),false);
  });
 
  await test('班表確認自動收合、再展開與焦點',async p=>{
@@ -91,8 +92,8 @@ const fs=require('fs'),assert=require('assert/strict');
  await test('不指定預約仍佔容量，腳底與組合長度過濾',async p=>{
  const b=booking('14:00','');b.guests=[{bodyMinutes:60,footMinutes:0,staff:''}];
  await seed(p,{rosters:{'2026-10-23':roster},bookings:[b],jobs:[]});assert.match(await p.locator('#availability-list').innerText(),/15:10起仍可預約/);
- await click(p,'tab-booking');await click(p,'new-day');await fill(p,'gStaff0','1');await p.locator('#gService0').selectOption('foot');await fill(p,'gFoot0','55');await p.locator('[data-find-slots]').click();assert.match(await p.locator('[data-slot-results]').innerText(),/15:10–20:55可開始/);
- await p.locator('#gService0').selectOption('both');await fill(p,'gUnits0','6');await p.locator('[data-find-slots]').click();assert.match(await p.locator('[data-slot-results]').innerText(),/15:10–19:55可開始/);
+ await click(p,'tab-booking');await click(p,'new-day');await fill(p,'gStaff0','1');await choose(p,'gService0','foot');await fill(p,'gFoot0','55');await p.locator('[data-find-slots]').click();assert.match(await p.locator('[data-slot-results]').innerText(),/15:10–20:55可開始/);
+ await choose(p,'gService0','both');await fill(p,'gUnits0','6');await p.locator('[data-find-slots]').click();assert.match(await p.locator('[data-slot-results]').innerText(),/15:10–19:55可開始/);
  });
  await test('全組多人容量與查看更多',async p=>{
  const r={confirmed:true,people:[{id:'1',from:'11:00',to:'22:00'},{id:'2',from:'11:00',to:'22:00'}]};
@@ -154,8 +155,23 @@ const fs=require('fs'),assert=require('assert/strict');
  assert.equal(await p.locator('#booking-editor').getByText('1400表示下午兩點。',{exact:true}).isVisible(),false);
  });
 
+ await test('新增當日與未來預約時間空白、修改保留原時間',async p=>{
+ await goto(p);await click(p,'tab-booking');await p.locator('#new-day').click();assert.equal(await p.locator('#bookTime').inputValue(),'');await p.locator('#bookingForm [type=submit]').click();assert.equal(await p.locator('#booking-editor').isVisible(),true);
+ await fill(p,'bookTime','1435');await p.locator('#bookingForm [type=submit]').click();await p.locator('[data-edit]:visible').click();assert.equal(await p.locator('#bookTime').inputValue(),'1435');await click(p,'cancelEditor');
+ await click(p,'tab-future');await fill(p,'futureDate','2026-10-25');await p.locator('#futureDate').dispatchEvent('change');await p.locator('#new-future').click();assert.equal(await p.locator('#bookTime').inputValue(),'');await fill(p,'bookTime','1530');await click(p,'cancelEditor');await p.locator('#new-future').click();assert.equal(await p.locator('#bookTime').inputValue(),'');
+ });
+ await test('服務單選不開啟原生選單，輸入與計時更新保留焦點',async p=>{
+ await goto(p);await click(p,'tab-booking');await p.locator('#new-day').click();assert.equal(await p.locator('#booking-editor select').count(),0);assert.equal(await p.locator('#booking-editor').getByRole('radio').count(),6);
+ await choose(p,'bookService','both');await fill(p,'bookTime','1435');await fill(p,'bookCount','2');await p.locator('#bookCount').press('Tab');assert.equal(await p.locator('[data-guest]').count(),2);
+ await choose(p,'gService1','foot');await fill(p,'gFoot1','55');await p.evaluate(()=>{window.savedService=document.querySelector('#gService1');window.testTimers.forEach(f=>f())});assert.equal(await p.locator('#gFoot1').evaluate(e=>document.activeElement===e),true);
+ await p.locator('#gService0 input[value=body]').focus();assert.equal(await p.locator('#gService0 input[value=both]').isChecked(),true);assert.equal(await p.locator('#booking-editor [role=dialog]').count(),0);
+ await choose(p,'gService0','body');await fill(p,'gUnits0','6');await p.locator('#bookingForm [type=submit]').click();assert.match(await p.locator('#day-list').innerText(),/腳底55分鐘/);assert.match(await p.locator('#day-list').innerText(),/身體60分鐘/);
+ await p.locator('[data-edit]:visible').click();assert.equal(await p.locator('#gService1 input[value=foot]').isChecked(),true);assert.equal(await p.locator('#gFoot1').inputValue(),'55');
+ });
+
  await browser.close();fs.writeFileSync(__dirname+'/test-results.txt',results.join('\n')+'\n');console.log(results.join('\n'));
 })().catch(e=>{console.error(e);process.exit(1)});
+
 
 
 
