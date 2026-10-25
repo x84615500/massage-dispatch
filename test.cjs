@@ -3,11 +3,11 @@ const fs=require('fs'),assert=require('assert/strict');
 (async()=>{
 
  const browser=await chromium.launch({headless:true,channel:'chrome'});const results=[];
- async function test(name,run){const context=await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true});
- await context.route('http://massage.test/**',route=>route.fulfill({contentType:'text/html; charset=utf-8',body:fs.readFileSync(__dirname+'/index.html','utf8')}));const page=await context.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));
+ async function test(name,run){if(process.env.MASSAGE_TEST_FILTER&&!name.includes(process.env.MASSAGE_TEST_FILTER))return;const context=await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true});
+ await context.route('https://massage.test/**',route=>route.fulfill({contentType:'text/html; charset=utf-8',body:fs.readFileSync(__dirname+'/index.html','utf8')}));const page=await context.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));
  await page.addInitScript(()=>{const NativeDate=Date;window.Date=class extends NativeDate{constructor(...args){super(...(args.length?args:['2026-10-23T14:00:00']))}static now(){return new NativeDate('2026-10-23T14:00:00').valueOf()}};window.testTimers=[];window.setInterval=fn=>{window.testTimers.push(fn);return 1}});
  try{await run(page);assert.deepEqual(errors,[]);results.push('PASS '+name)}catch(e){results.push('FAIL '+name+': '+e.message);process.exitCode=1}finally{await context.close()}}
- const url='http://massage.test/';
+ const url='https://massage.test/';
  const goto=p=>p.goto(url);
  const click=async(p,id)=>{await p.locator('#'+id).click();if(id==='new-day'||id==='new-future')await p.locator('#bookTime').fill('1730')};
  const choose=(p,id,value)=>p.locator('#'+id+' input[value='+value+']').check();
@@ -35,7 +35,7 @@ const fs=require('fs'),assert=require('assert/strict');
  await click(p,'new-future');await fill(p,'gStaff0','8');await fill(p,'bookNote','測試備註');await p.locator('#bookingForm [type=submit]').click();await p.locator('[data-confirm]:visible').click();assert.match(await p.locator('#future-list').innerText(),/已確認/);
  await p.locator('[data-edit]:visible').click();assert.equal(await p.locator('#gStaff0').inputValue(),'8');await click(p,'cancelEditor');
  await p.evaluate(()=>Object.defineProperty(navigator,'clipboard',{value:{writeText:async text=>window.copied=text},configurable:true}));
- await click(p,'copy-future');const copied=await p.evaluate(()=>window.copied);for(const text of ['2026-10-25','17:30','1人','90分鐘','指定8號','已確認','測試備註'])assert.ok(copied.includes(text),text);
+ await click(p,'copy-future');const copied=await p.evaluate(()=>window.copied);for(const text of ['2026-10-25','17:30','1人','90分鐘','8號','已確認','測試備註'])assert.ok(copied.includes(text),text);
  await fill(p,'futureDate','2026-10-26');await p.locator('#futureDate').dispatchEvent('change');assert.match(await p.locator('#future-list').innerText(),/尚無預約/);
  await fill(p,'futureDate','2026-10-25');await p.locator('#futureDate').dispatchEvent('change');assert.match(await p.locator('#future-list').innerText(),/已確認/);
  });
@@ -59,7 +59,7 @@ const fs=require('fs'),assert=require('assert/strict');
  assert.equal(await p.locator('#gService2').evaluate(e=>e.value),'both');assert.equal(await p.locator('#gFoot2').inputValue(),'55');await choose(p,'gService0','body');await fill(p,'gStaff0','1');await choose(p,'gService1','foot');await fill(p,'gStaff1','8');await fill(p,'gFoot2','70');await p.locator('#bookingForm [type=submit]').click();
  assert.match(await p.locator('#day-list').innerText(),/身體60分鐘＋腳底70分鐘/);
  await p.locator('[data-edit]:visible').click();assert.equal(await p.locator('#gService0').evaluate(e=>e.value),'body');assert.equal(await p.locator('#gService1').evaluate(e=>e.value),'foot');assert.equal(await p.locator('#gService2').evaluate(e=>e.value),'both');assert.equal(await p.locator('#gFoot2').inputValue(),'70');await click(p,'cancelEditor');
- await p.evaluate(()=>Object.defineProperty(navigator,'clipboard',{value:{writeText:async t=>window.copied=t},configurable:true}));await click(p,'copy-day');const copied=await p.evaluate(()=>window.copied);assert.ok(!/客[123]/.test(copied));for(const value of ['3人','身體60分鐘，指定1號','腳底55分鐘，指定8號','身體60分鐘＋腳底70分鐘，不指定'])assert.ok(copied.includes(value),value);
+ await p.evaluate(()=>Object.defineProperty(navigator,'clipboard',{value:{writeText:async t=>window.copied=t},configurable:true}));await click(p,'copy-day');const copied=await p.evaluate(()=>window.copied);assert.ok(!/客[123]/.test(copied));for(const value of ['3人','1號｜17:30｜身體60分鐘','8號｜17:30｜腳底55分鐘','不指定｜17:30｜身體60分鐘＋腳底70分鐘'])assert.ok(copied.includes(value),value);
  await p.reload();await click(p,'tab-booking');assert.match(await p.locator('#day-list').innerText(),/腳底70分鐘/);
  });
  await test('組合預約容量涵蓋腳底與整理邊界',async p=>{
@@ -139,7 +139,7 @@ const fs=require('fs'),assert=require('assert/strict');
  const b1=booking('15:00','1'),b2={...booking('16:00',''),id:'b2',status:'pending',guests:[{units:2,staff:''},{units:3,staff:''}]};
  await seed(p,{rosters:{'2026-10-23':roster},bookings:[b1,b2],jobs:[]});await click(p,'tab-booking');
  assert.equal(await p.locator('#day-list').getByRole('heading',{level:3}).count(),2);
- assert.deepEqual(await p.locator('#day-list h3').allTextContents(),['15:00｜1人','16:00｜2人']);assert.equal(await p.locator('#day-list article').count(),2);
+ assert.deepEqual(await p.locator('#day-list h3').allTextContents(),['1號｜15:00｜1人','不指定｜16:00｜2人']);assert.equal(await p.locator('#day-list article').count(),2);
  await p.locator('[data-edit]:visible').first().click();assert.equal(await p.locator('#bookTimeHint').innerText(),'1400表示下午兩點。');
  });
 
@@ -169,8 +169,30 @@ const fs=require('fs'),assert=require('assert/strict');
  await p.locator('[data-edit]:visible').click();assert.equal(await p.locator('#gService1 input[value=foot]').isChecked(),true);assert.equal(await p.locator('#gFoot1').inputValue(),'55');
  });
 
+ await test('畫面與複製預約皆為師傅號碼、時間、服務長度順序',async p=>{
+ const b=booking('15:30','8');b.guests=[{bodyMinutes:60,footMinutes:0,staff:'8'},{bodyMinutes:0,footMinutes:55,staff:''}];b.note='團體備註';
+ await seed(p,{rosters:{'2026-10-23':roster},bookings:[b],jobs:[]});await click(p,'tab-booking');
+ assert.equal(await p.locator('#day-list h3').innerText(),'8號、不指定｜15:30｜2人');
+ await p.evaluate(()=>Object.defineProperty(navigator,'clipboard',{value:{writeText:async t=>window.copied=t},configurable:true}));await click(p,'copy-day');
+ const copied=await p.evaluate(()=>window.copied);assert.ok(copied.includes('8號｜15:30｜身體60分鐘；不指定｜15:30｜腳底55分鐘｜2人｜已確認｜備註：團體備註'));assert.ok(!/客[12]/.test(copied));
+ });
+ await test('匯出JSON內容與下載請求含全部日期紀錄且不修改資料',async p=>{
+ const b1=booking('15:00','1'),b2={...booking('16:00',''),id:'later',date:'2026-10-25',status:'pending'},b3={...booking('17:00','1'),id:'cancelled',date:'2026-10-26',status:'cancelled'};
+ const original={rosters:{'2026-10-23':roster,'2026-10-25':{confirmed:false,people:[{id:'8',from:'12:00',to:'20:00'}]}},bookings:[b1,b2,b3],jobs:[{date:'2026-10-23',staff:'1',start:720,units:2}]};
+ await seed(p,original);const before=await p.evaluate(()=>localStorage.getItem('massage-dispatch-01'));
+ await p.evaluate(()=>{const original=URL.createObjectURL.bind(URL);URL.createObjectURL=blob=>{window.exportBlob=blob;return original(blob)};HTMLAnchorElement.prototype.click=function(){window.exportDownload={name:this.download,url:this.href}}});
+await click(p,'export-data');const request=await p.evaluate(()=>window.exportDownload);assert.match(request.name,/^massage-dispatch-2026-10-23-1400\.json$/);assert.ok(request.url.startsWith('blob:'));
+const exported=JSON.parse(await p.evaluate(()=>window.exportBlob.text()));assert.equal(exported.app,'massage-dispatch');assert.equal(exported.schemaVersion,1);assert.equal(exported.appVersion,'v0.1.11');assert.ok(exported.exportedAt);assert.deepEqual(exported.data,original);assert.equal(await p.evaluate(()=>localStorage.getItem('massage-dispatch-01')),before);
+ });
+ await test('資料異常時不匯出假空白備份',async p=>{
+ await p.addInitScript(()=>localStorage.setItem('massage-dispatch-01','{bad'));await goto(p);let count=0;p.on('download',()=>count++);await click(p,'export-data');assert.match(await p.locator('#message').innerText(),/不完整備份/);assert.equal(count,0);assert.equal(await p.evaluate(()=>localStorage.getItem('massage-dispatch-01')),'{bad');
+ });
+
  await browser.close();fs.writeFileSync(__dirname+'/test-results.txt',results.join('\n')+'\n');console.log(results.join('\n'));
 })().catch(e=>{console.error(e);process.exit(1)});
+
+
+
 
 
 
