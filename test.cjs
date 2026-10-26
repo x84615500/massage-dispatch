@@ -184,7 +184,7 @@ const choose=(p,id,value)=>p.locator('#'+id+' input[value='+value+']').check();
  await seed(p,original);const before=await p.evaluate(()=>localStorage.getItem('massage-dispatch-01'));
  await p.evaluate(()=>{const original=URL.createObjectURL.bind(URL);URL.createObjectURL=blob=>{window.exportBlob=blob;return original(blob)};HTMLAnchorElement.prototype.click=function(){window.exportDownload={name:this.download,url:this.href}}});
 await click(p,'export-data');const request=await p.evaluate(()=>window.exportDownload);assert.match(request.name,/^massage-dispatch-2026-10-23-1400\.json$/);assert.ok(request.url.startsWith('blob:'));
-const exported=JSON.parse(await p.evaluate(()=>window.exportBlob.text()));assert.equal(exported.app,'massage-dispatch');assert.equal(exported.schemaVersion,1);assert.equal(exported.appVersion,'v0.1.14');assert.ok(exported.exportedAt);assert.deepEqual(exported.data,original);assert.equal(await p.evaluate(()=>localStorage.getItem('massage-dispatch-01')),before);
+const exported=JSON.parse(await p.evaluate(()=>window.exportBlob.text()));assert.equal(exported.app,'massage-dispatch');assert.equal(exported.schemaVersion,1);assert.equal(exported.appVersion,'v0.1.15');assert.ok(exported.exportedAt);assert.deepEqual(exported.data,original);assert.equal(await p.evaluate(()=>localStorage.getItem('massage-dispatch-01')),before);
  });
  await test('資料異常時不匯出假空白備份',async p=>{
  await p.addInitScript(()=>localStorage.setItem('massage-dispatch-01','{bad'));await goto(p);let count=0;p.on('download',()=>count++);await click(p,'export-data');assert.match(await p.locator('#message').innerText(),/不完整備份/);assert.equal(count,0);assert.equal(await p.evaluate(()=>localStorage.getItem('massage-dispatch-01')),'{bad');
@@ -256,8 +256,34 @@ const exported=JSON.parse(await p.evaluate(()=>window.exportBlob.text()));assert
  assert.deepEqual(await p.evaluate(()=>[...document.querySelectorAll('[aria-describedby]')].flatMap(el=>el.getAttribute('aria-describedby').split(/\s+/).filter(id=>!document.getElementById(id)))),[]);
  });
 
+ await test('合併保留本機資料、增加班表師傅預約，內容衝突沿用本機',async p=>{
+ const local={rosters:{'2026-10-23':roster,'2026-10-28':{confirmed:false,people:[{id:'9',from:'11:30',to:'22:30'}]}},bookings:[{...booking('15:00','1'),note:'本機'}, {...booking('18:00',''),id:'local-only',status:'pending'}],jobs:[]};
+ await seed(p,local);
+ const incoming={rosters:{'2026-10-23':{confirmed:true,people:[{id:'1',from:'11:30',to:'22:30'},{id:'2',from:'11:00',to:'22:00'}]},'2026-10-25':{confirmed:true,people:[{id:'8',from:'11:00',to:'22:00'}]}},bookings:[{...booking('16:00','1'),note:'匯入不可覆寫'}, {...booking('17:00','2'),id:'new-booking'},{...booking('19:00','8'),id:'future-new',date:'2026-10-25'}],jobs:[]};
+ await uploadBackup(p,backupPayload(incoming));await p.locator('#import-preview').waitFor({state:'visible'});assert.match(await p.locator('#import-summary').innerText(),/衝突2項/);await p.locator('#import-conflicts summary').click();assert.match(await p.locator('#import-conflict-list').innerText(),/班別不同/);await click(p,'confirm-import');
+ const merged=await p.evaluate(()=>JSON.parse(localStorage.getItem('massage-dispatch-01')));assert.deepEqual(merged.bookings.find(b=>b.id==='b1'),local.bookings[0]);assert.ok(merged.bookings.some(b=>b.id==='local-only'));assert.ok(merged.bookings.some(b=>b.id==='new-booking'));assert.ok(merged.rosters['2026-10-28']);assert.equal(merged.rosters['2026-10-23'].people.find(p=>p.id==='1').from,'11:00');assert.equal(merged.rosters['2026-10-23'].people.length,2);
+ await uploadBackup(p,backupPayload(incoming));await p.locator('#import-preview').waitFor({state:'visible'});await click(p,'confirm-import');assert.deepEqual(await p.evaluate(()=>JSON.parse(localStorage.getItem('massage-dispatch-01'))),merged);
+ });
+ await test('新增撞時段或未確認班表的預約改待確認，不變更原預約',async p=>{
+ const local={rosters:{'2026-10-23':roster},bookings:[booking('15:00','1')],jobs:[]};await seed(p,local);
+ const incoming={rosters:{},bookings:[{...booking('15:10','1'),id:'conflict-new'}, {...booking('16:00','1'),id:'fits-new'}, {...booking('15:00','8'),id:'no-roster',date:'2026-10-25'}],jobs:[]};
+ await uploadBackup(p,backupPayload(incoming));await p.locator('#import-preview').waitFor({state:'visible'});assert.match(await p.locator('#import-summary').innerText(),/待確認預約2筆/);await click(p,'confirm-import');const merged=await p.evaluate(()=>JSON.parse(localStorage.getItem('massage-dispatch-01')));assert.deepEqual(merged.bookings[0],local.bookings[0]);assert.equal(merged.bookings.find(b=>b.id==='conflict-new').status,'pending');assert.equal(merged.bookings.find(b=>b.id==='no-roster').status,'pending');assert.equal(merged.bookings.find(b=>b.id==='fits-new').status,'confirmed');
+ });
+ await test('工作依編號或內容去重，衝突工作不影響本機紀錄',async p=>{
+ const local={rosters:{'2026-10-23':roster},bookings:[booking('16:00','1')],jobs:[{id:'j1',date:'2026-10-23',staff:'1',start:780,units:2}]};await seed(p,local);
+ const incoming={rosters:{},bookings:[],jobs:[{...local.jobs[0],units:3},{date:'2026-10-23',staff:'1',start:780,bodyMinutes:20,footMinutes:0},{date:'2026-10-23',staff:'1',start:840,units:20},{date:'2026-10-23',staff:'1',start:720,units:2}]};
+ await uploadBackup(p,backupPayload(incoming));await p.locator('#import-preview').waitFor({state:'visible'});await click(p,'confirm-import');let merged=await p.evaluate(()=>JSON.parse(localStorage.getItem('massage-dispatch-01')));assert.equal(merged.jobs.length,2);assert.deepEqual(merged.jobs[0],local.jobs[0]);assert.equal(merged.jobs[1].start,720);
+ await uploadBackup(p,backupPayload(incoming));await p.locator('#import-preview').waitFor({state:'visible'});await click(p,'confirm-import');assert.equal(await p.evaluate(()=>JSON.parse(localStorage.getItem('massage-dispatch-01')).jobs.length),2);
+ });
+ await test('空備份不清除資料，既有待確認班表不被提高為已確認',async p=>{
+ await goto(p);await add(p,'1');const before=await p.evaluate(()=>JSON.parse(localStorage.getItem('massage-dispatch-01')));await uploadBackup(p,backupPayload({rosters:{},bookings:[],jobs:[]}));await p.locator('#import-preview').waitFor({state:'visible'});assert.ok(!(await p.locator('#import-preview').innerText()).includes('取代此裝置'));await click(p,'confirm-import');assert.deepEqual(await p.evaluate(()=>JSON.parse(localStorage.getItem('massage-dispatch-01'))),before);
+ await uploadBackup(p,backupPayload({rosters:{'2026-10-23':roster},bookings:[],jobs:[]}));await p.locator('#import-preview').waitFor({state:'visible'});await click(p,'confirm-import');assert.equal(await p.evaluate(()=>JSON.parse(localStorage.getItem('massage-dispatch-01')).rosters['2026-10-23'].confirmed),false);
+ });
+
  await browser.close();fs.writeFileSync(__dirname+'/test-results.txt',results.join('\n')+'\n');console.log(results.join('\n'));
 })().catch(e=>{console.error(e);process.exit(1)});
+
+
 
 
 
