@@ -10,7 +10,9 @@ const fs=require('fs'),assert=require('assert/strict');
  const url='https://massage.test/';
  const goto=p=>p.goto(url);
  const click=async(p,id)=>{await p.locator('#'+id).click();if(id==='new-day'||id==='new-future')await p.locator('#bookTime').fill('1730')};
- const choose=(p,id,value)=>p.locator('#'+id+' input[value='+value+']').check();
+ const uploadBackup=async(p,payload)=>{await p.locator('#backupFile').setInputFiles({name:'backup.json',mimeType:'application/json',buffer:Buffer.from(typeof payload==='string'?payload:JSON.stringify(payload))});};
+const backupPayload=data=>({app:'massage-dispatch',schemaVersion:1,appVersion:'v0.1.11',exportedAt:'2026-10-23T06:00:00.000Z',data});
+const choose=(p,id,value)=>p.locator('#'+id+' input[value='+value+']').check();
  const fill=(p,id,value)=>p.locator('#'+id).fill(id==='bookTime'?value.replace(':',''):value);
  async function add(p,id){await fill(p,'addStaff',id);await p.locator('#addStaffForm button').click()}
  async function confirm(p){await click(p,'confirmToday')}
@@ -182,7 +184,7 @@ const fs=require('fs'),assert=require('assert/strict');
  await seed(p,original);const before=await p.evaluate(()=>localStorage.getItem('massage-dispatch-01'));
  await p.evaluate(()=>{const original=URL.createObjectURL.bind(URL);URL.createObjectURL=blob=>{window.exportBlob=blob;return original(blob)};HTMLAnchorElement.prototype.click=function(){window.exportDownload={name:this.download,url:this.href}}});
 await click(p,'export-data');const request=await p.evaluate(()=>window.exportDownload);assert.match(request.name,/^massage-dispatch-2026-10-23-1400\.json$/);assert.ok(request.url.startsWith('blob:'));
-const exported=JSON.parse(await p.evaluate(()=>window.exportBlob.text()));assert.equal(exported.app,'massage-dispatch');assert.equal(exported.schemaVersion,1);assert.equal(exported.appVersion,'v0.1.13');assert.ok(exported.exportedAt);assert.deepEqual(exported.data,original);assert.equal(await p.evaluate(()=>localStorage.getItem('massage-dispatch-01')),before);
+const exported=JSON.parse(await p.evaluate(()=>window.exportBlob.text()));assert.equal(exported.app,'massage-dispatch');assert.equal(exported.schemaVersion,1);assert.equal(exported.appVersion,'v0.1.14');assert.ok(exported.exportedAt);assert.deepEqual(exported.data,original);assert.equal(await p.evaluate(()=>localStorage.getItem('massage-dispatch-01')),before);
  });
  await test('資料異常時不匯出假空白備份',async p=>{
  await p.addInitScript(()=>localStorage.setItem('massage-dispatch-01','{bad'));await goto(p);let count=0;p.on('download',()=>count++);await click(p,'export-data');assert.match(await p.locator('#message').innerText(),/不完整備份/);assert.equal(count,0);assert.equal(await p.evaluate(()=>localStorage.getItem('massage-dispatch-01')),'{bad');
@@ -219,8 +221,45 @@ const exported=JSON.parse(await p.evaluate(()=>window.exportBlob.text()));assert
  await goto(p);await click(p,'tab-booking');await click(p,'tab-future');await fill(p,'futureDate','2026-10-25');await p.locator('#futureDate').dispatchEvent('change');await click(p,'collapse-future-roster');await fill(p,'futureDate','2026-10-26');await p.locator('#futureDate').dispatchEvent('change');assert.equal(await p.locator('#future-roster-panel').isVisible(),true);await fill(p,'futureStaff','1');await p.locator('#futureStaffForm button').click();assert.equal(await p.locator('#future-roster-panel').isVisible(),true);await fill(p,'futureDate','2026-10-25');await p.locator('#futureDate').dispatchEvent('change');assert.equal(await p.locator('#future-roster-panel').isVisible(),false);
  });
 
+ await test('匯出匯入往返、舊版備份、重新載入與重複匯入不重複資料',async p=>{
+ const original={rosters:{'2026-10-23':roster,'2026-10-25':{confirmed:false,people:[{id:'8',from:'11:30',to:'22:30'}]}},bookings:[booking(),{...booking('16:00',''),id:'pending',date:'2026-10-25',status:'pending'},{...booking('18:00','1'),id:'cancelled',status:'cancelled'}],jobs:[{date:'2026-10-23',staff:'1',start:720,units:2}]};
+ await goto(p);const before=await p.evaluate(()=>localStorage.getItem('massage-dispatch-01'));await uploadBackup(p,backupPayload(original));await p.locator('#import-preview').waitFor({state:'visible'});assert.equal(await p.evaluate(()=>localStorage.getItem('massage-dispatch-01')),before);assert.match(await p.locator('#import-summary').innerText(),/預約3筆/);
+ await click(p,'confirm-import');assert.deepEqual(await p.evaluate(()=>JSON.parse(localStorage.getItem('massage-dispatch-01'))),original);
+ const rollback=await p.evaluate(()=>JSON.parse(localStorage.getItem('massage-dispatch-01-before-import')));assert.equal(rollback.previousStorage,before);assert.equal(await p.locator('#download-before-import').isVisible(),true);
+ await p.evaluate(()=>{const original=URL.createObjectURL.bind(URL);URL.createObjectURL=blob=>{window.exportBlob=blob;return original(blob)};HTMLAnchorElement.prototype.click=function(){window.exportDownload={name:this.download,url:this.href}}});
+ await click(p,'export-data');const exported=await p.evaluate(()=>window.exportBlob.text());assert.deepEqual(JSON.parse(exported).data,original);await click(p,'download-before-import');const rollbackFile=JSON.parse(await p.evaluate(()=>window.exportBlob.text()));assert.equal(rollbackFile.previousStorage,before);assert.equal(rollbackFile.schemaVersion,1);
+ await p.reload();assert.deepEqual(await p.evaluate(()=>JSON.parse(localStorage.getItem('massage-dispatch-01'))),original);await click(p,'tab-booking');assert.match(await p.locator('#day-list').innerText(),/17:30/);
+ await uploadBackup(p,exported);await p.locator('#import-preview').waitFor({state:'visible'});await click(p,'confirm-import');assert.equal(await p.evaluate(()=>JSON.parse(localStorage.getItem('massage-dispatch-01')).bookings.length),3);
+ });
+ await test('取消匯入不改資料，錯誤及未知版本備份不覆蓋',async p=>{
+ await goto(p);await add(p,'1');const before=await p.evaluate(()=>localStorage.getItem('massage-dispatch-01'));await uploadBackup(p,backupPayload({rosters:{},bookings:[],jobs:[]}));await p.locator('#import-preview').waitFor({state:'visible'});await click(p,'cancel-import');assert.equal(await p.evaluate(()=>localStorage.getItem('massage-dispatch-01')),before);
+ const valid={rosters:{'2026-10-23':roster},bookings:[booking()],jobs:[]};
+ const invalid=['{bad',{...backupPayload(valid),app:'other'},{...backupPayload(valid),schemaVersion:99},backupPayload({...valid,bookings:[booking(),booking()]}),backupPayload({...valid,rosters:{'2026-10-23':{confirmed:true,people:[null]}}}),backupPayload({...valid,jobs:[{date:'2026-10-23',staff:'1',start:null,units:2}]})];
+ for(const payload of invalid){await uploadBackup(p,payload);await p.locator('#message').filter({hasText:'無法讀取備份'}).waitFor({state:'visible'});assert.equal(await p.locator('#import-preview').isVisible(),false);assert.equal(await p.evaluate(()=>localStorage.getItem('massage-dispatch-01')),before)}
+ });
+ await test('匯入儲存失敗時原紀錄與畫面不變，備份仍可保留',async p=>{
+ await goto(p);await add(p,'1');const before=await p.evaluate(()=>localStorage.getItem('massage-dispatch-01'));await uploadBackup(p,backupPayload({rosters:{},bookings:[],jobs:[]}));await p.locator('#import-preview').waitFor({state:'visible'});
+ await p.evaluate(()=>{const original=Storage.prototype.setItem;Storage.prototype.setItem=function(key,value){if(key==='massage-dispatch-01')throw Error('quota');return original.call(this,key,value)}});
+ await click(p,'confirm-import');assert.match(await p.locator('#message').innerText(),/未匯入/);assert.equal(await p.evaluate(()=>localStorage.getItem('massage-dispatch-01')),before);assert.match(await p.locator('#today-roster').innerText(),/共1位/);assert.equal(await p.locator('#download-before-import').isVisible(),true);
+ });
+ await test('匯入前備份無法保存則不覆蓋原資料',async p=>{
+ await goto(p);await add(p,'1');const before=await p.evaluate(()=>localStorage.getItem('massage-dispatch-01'));await uploadBackup(p,backupPayload({rosters:{},bookings:[],jobs:[]}));await p.locator('#import-preview').waitFor({state:'visible'});await p.evaluate(()=>Storage.prototype.setItem=function(){throw Error('quota')});await click(p,'confirm-import');assert.equal(await p.evaluate(()=>localStorage.getItem('massage-dispatch-01')),before);assert.match(await p.locator('#message').innerText(),/未匯入/);
+ });
+ await test('預覽後資料改變時拒絕覆蓋較新資料',async p=>{
+ await goto(p);await add(p,'1');await uploadBackup(p,backupPayload({rosters:{},bookings:[],jobs:[]}));await p.locator('#import-preview').waitFor({state:'visible'});const newer=await p.evaluate(()=>{const d=JSON.parse(localStorage.getItem('massage-dispatch-01'));d.bookings.push({id:'newer',date:'2026-10-23',time:'16:00',guests:[{units:2,staff:''}],note:'newer',status:'pending'});const raw=JSON.stringify(d);localStorage.setItem('massage-dispatch-01',raw);return raw});await click(p,'confirm-import');assert.equal(await p.evaluate(()=>localStorage.getItem('massage-dispatch-01')),newer);assert.match(await p.locator('#message').innerText(),/資料已變更/);
+ });
+ await test('可用正確備份修復損壞資料且保留原始內容',async p=>{
+ await p.addInitScript(()=>localStorage.setItem('massage-dispatch-01','{bad'));await goto(p);await uploadBackup(p,backupPayload({rosters:{'2026-10-23':roster},bookings:[],jobs:[]}));await p.locator('#import-preview').waitFor({state:'visible'});await click(p,'confirm-import');assert.equal(await p.locator('#storage-warning').isVisible(),false);assert.equal(await p.evaluate(()=>JSON.parse(localStorage.getItem('massage-dispatch-01-before-import')).previousStorage),'{bad');assert.equal(await p.evaluate(()=>JSON.parse(localStorage.getItem('massage-dispatch-01')).rosters['2026-10-23'].people.length),1);
+ });
+ await test('重複提示已清除且欄位描述沒有失效參照',async p=>{
+ await goto(p);assert.equal(await p.locator('#addStaffFeedback,#footHint,#bookServiceHint').count(),0);assert.equal(await p.locator('#message').getAttribute('aria-live'),null);await click(p,'tab-booking');await click(p,'new-day');assert.equal(await p.locator('#bookCheck').isVisible(),false);
+ assert.deepEqual(await p.evaluate(()=>[...document.querySelectorAll('[aria-describedby]')].flatMap(el=>el.getAttribute('aria-describedby').split(/\s+/).filter(id=>!document.getElementById(id)))),[]);
+ });
+
  await browser.close();fs.writeFileSync(__dirname+'/test-results.txt',results.join('\n')+'\n');console.log(results.join('\n'));
 })().catch(e=>{console.error(e);process.exit(1)});
+
+
 
 
 
