@@ -182,14 +182,34 @@ const fs=require('fs'),assert=require('assert/strict');
  await seed(p,original);const before=await p.evaluate(()=>localStorage.getItem('massage-dispatch-01'));
  await p.evaluate(()=>{const original=URL.createObjectURL.bind(URL);URL.createObjectURL=blob=>{window.exportBlob=blob;return original(blob)};HTMLAnchorElement.prototype.click=function(){window.exportDownload={name:this.download,url:this.href}}});
 await click(p,'export-data');const request=await p.evaluate(()=>window.exportDownload);assert.match(request.name,/^massage-dispatch-2026-10-23-1400\.json$/);assert.ok(request.url.startsWith('blob:'));
-const exported=JSON.parse(await p.evaluate(()=>window.exportBlob.text()));assert.equal(exported.app,'massage-dispatch');assert.equal(exported.schemaVersion,1);assert.equal(exported.appVersion,'v0.1.11');assert.ok(exported.exportedAt);assert.deepEqual(exported.data,original);assert.equal(await p.evaluate(()=>localStorage.getItem('massage-dispatch-01')),before);
+const exported=JSON.parse(await p.evaluate(()=>window.exportBlob.text()));assert.equal(exported.app,'massage-dispatch');assert.equal(exported.schemaVersion,1);assert.equal(exported.appVersion,'v0.1.12');assert.ok(exported.exportedAt);assert.deepEqual(exported.data,original);assert.equal(await p.evaluate(()=>localStorage.getItem('massage-dispatch-01')),before);
  });
  await test('資料異常時不匯出假空白備份',async p=>{
  await p.addInitScript(()=>localStorage.setItem('massage-dispatch-01','{bad'));await goto(p);let count=0;p.on('download',()=>count++);await click(p,'export-data');assert.match(await p.locator('#message').innerText(),/不完整備份/);assert.equal(count,0);assert.equal(await p.evaluate(()=>localStorage.getItem('massage-dispatch-01')),'{bad');
  });
 
+ await test('今日與未來可選早晚班，保存正確上下班時間',async p=>{
+ await goto(p);assert.equal(await p.locator('#addStart').count(),0);await add(p,'1');await p.locator('#addShift input[value=late]').check();await add(p,'2');await confirm(p);await click(p,'toggle-roster');assert.match(await p.locator('#today-roster').innerText(),/早班 11:00–22:00/);assert.match(await p.locator('#today-roster').innerText(),/晚班 11:30–22:30/);
+ const todayRoster=await p.evaluate(()=>JSON.parse(localStorage.getItem('massage-dispatch-01')).rosters['2026-10-23']);assert.deepEqual(todayRoster.people.map(p=>[p.from,p.to]),[['11:00','22:00'],['11:30','22:30']]);
+ await click(p,'tab-booking');await click(p,'tab-future');await fill(p,'futureDate','2026-10-25');await p.locator('#futureDate').dispatchEvent('change');await p.locator('#futureShift input[value=late]').check();await fill(p,'futureStaff','8');await p.locator('#futureStaffForm button').click();await click(p,'confirmFuture');assert.match(await p.locator('#future-summary').innerText(),/晚班 11:30–22:30/);
+ await click(p,'new-future');await fill(p,'gStaff0','8');await fill(p,'gUnits0','2');await p.locator('[data-find-slots]').click();assert.match(await p.locator('[data-slot-results]').innerText(),/11:30–22:00可開始/);
+ });
+ await test('既有自訂班表不被早晚班設定覆蓋',async p=>{
+ const r={confirmed:true,people:[{id:'7',from:'12:15',to:'20:45'}]};await seed(p,{rosters:{'2026-10-23':r},bookings:[],jobs:[]});await click(p,'toggle-roster');assert.match(await p.locator('#today-roster').innerText(),/原有班表 12:15–20:45/);await add(p,'8');assert.equal(await p.evaluate(()=>JSON.parse(localStorage.getItem('massage-dispatch-01')).rosters['2026-10-23'].people[0].from),'12:15');
+ });
+ await test('數字欄位上一欄下一欄及完成不送出表單且保留輸入',async p=>{
+ await goto(p);await click(p,'toggle-time-search');await fill(p,'searchTime','1435');assert.equal(await p.locator('#numeric-toolbar').isVisible(),true);assert.equal(await p.locator('#searchTime').getAttribute('inputmode'),'numeric');assert.equal(await p.locator('#searchTime').getAttribute('enterkeyhint'),'next');
+ await click(p,'numeric-next');assert.equal(await p.locator('#searchMinutes').evaluate(e=>document.activeElement===e),true);await fill(p,'searchMinutes','9');assert.equal(await p.locator('#searchMinutes').getAttribute('enterkeyhint'),'done');await click(p,'numeric-prev');assert.equal(await p.locator('#searchTime').inputValue(),'1435');assert.equal(await p.locator('#searchTime').evaluate(e=>document.activeElement===e),true);await p.locator('#searchTime').press('Enter');assert.equal(await p.locator('#searchMinutes').evaluate(e=>document.activeElement===e),true);
+ await click(p,'numeric-done');assert.equal(await p.locator('#numeric-toolbar').isVisible(),false);assert.equal(await p.locator('#time-search-results').isVisible(),false);assert.equal(await p.locator('#searchMinutes').inputValue(),'9');assert.equal(await p.locator('#timeSearchForm [type=submit]').evaluate(e=>document.activeElement===e),true);
+ });
+ await test('欄位切換略過停用欄位，動態客人數字輸入也有提示',async p=>{
+ await goto(p);await click(p,'tab-booking');await click(p,'new-day');await choose(p,'bookService','body');await fill(p,'gUnits0','6');await click(p,'numeric-next');assert.equal(await p.locator('#gStaff0').evaluate(e=>document.activeElement===e),true);
+ await fill(p,'bookCount','2');await p.locator('#bookCount').press('Tab');await fill(p,'gStaff1','8');assert.equal(await p.locator('#gStaff1').getAttribute('enterkeyhint'),'next');await click(p,'numeric-next');assert.equal(await p.locator('#bookNote').evaluate(e=>document.activeElement===e),true);assert.equal(await p.locator('#numeric-toolbar').isVisible(),false);
+ });
+
  await browser.close();fs.writeFileSync(__dirname+'/test-results.txt',results.join('\n')+'\n');console.log(results.join('\n'));
 })().catch(e=>{console.error(e);process.exit(1)});
+
 
 
 
