@@ -3,7 +3,7 @@
 const API='https://line-ai-bot-swart.vercel.app/api/dispatch',$=id=>document.getElementById(id);
 const panel=document.createElement('section');panel.className='card';panel.id='cloud-panel';panel.setAttribute('aria-label','雲端預約與LINE連結');
 panel.innerHTML='<h2>雲端預約管理</h2><p id="cloud-status" role="status">目前為本機模式，尚未登入雲端。</p><form id="cloud-login"><label for="cloud-email">管理者信箱</label><input id="cloud-email" type="email" autocomplete="email" required><button type="submit">寄送登入連結</button></form><div id="cloud-tools" hidden><button id="cloud-refresh">重新讀取雲端</button><button id="cloud-bind">產生LINE綁定碼</button><button id="cloud-export">下載雲端備份</button><button id="cloud-history">查看操作紀錄</button><label for="cloud-import">匯入先前匯出的JSON備份</label><input id="cloud-import" type="file" accept=".json,application/json"><button id="cloud-import-confirm" hidden>確認合併匯入</button><label for="cloud-before">清理此日期以前已結束／取消的預約</label><input id="cloud-before" type="date"><button id="cloud-purge-preview">預覽清理範圍</button><button id="cloud-purge-confirm" hidden>確認永久清理</button><button id="cloud-logout">登出雲端，返回本機資料</button></div><p id="cloud-result" role="status" style="white-space:pre-wrap"></p>';
-document.querySelector('header').after(panel);
+document.querySelector('main').append(panel);
 let config=null,session=null,revision=0,confirmed=null,queuedNotice='',importPreview=null,purgePreview=null;
 const adapter=window.DispatchCloud={active:false,pending:false,notice(message){queuedNotice=message;},save(document){
   const snapshot=JSON.parse(JSON.stringify(document));this.pending=true;status('正在寫入雲端，尚未確認成功。');
