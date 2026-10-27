@@ -1,0 +1,12 @@
+{
+  "name": "massage-dispatch",
+  "private": true,
+  "version": "0.2.0",
+  "scripts": {
+    "test:core": "node --test cloud/test-core.cjs cloud/test-server.cjs cloud/test-line.cjs",
+    "test:cloud": "node cloud/test-browser.cjs",
+    "test:ui": "node test-cloud-regression.cjs"
+  },
+  "devDependencies": { "@electric-sql/pglite": "0.5.11" }
+}
+

@@ -1,1 +1,7 @@
 node_modules/
+.env*
+*.key
+.tavily-test-key
+bot-webhook.js
+test-results.txt
+
