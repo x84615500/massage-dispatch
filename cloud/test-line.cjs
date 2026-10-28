@@ -7,6 +7,7 @@ test('compact and Chinese dates, times and combined services have exact meanings
   assert.equal(booking.date,'2026-10-31');assert.equal(booking.time,'13:35');assert.equal(booking.guests[0].bodyMinutes,90);assert.equal(booking.guests[0].footMinutes,40);
   assert.equal(line.parseNew('新增預約 2026年10月31日 下午1點35分 身體90分鐘').guests[0].bodyMinutes,90);
   assert.equal(line.parseNew('新增預約 20261031 1335 腳底40').guests[0].bodyMinutes,0);
+  const withNote=line.parseNew('新增預約 20990101 1335 身體9 備註今天提到2人與指定3');assert.equal(withNote.date,'2099-01-01');assert.equal(withNote.guests.length,1);assert.equal(withNote.guests[0].staff,'');
   assert.equal(line.parseDate('20260230'),null);assert.equal(line.parseTime('2460'),null);
   assert.equal(line.parseTime('修改預約 1335 身體9'),null);assert.equal(line.parseTime('新增預約 20261031 身體9 備註1335'),null);
 });

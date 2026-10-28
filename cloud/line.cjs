@@ -3,6 +3,7 @@ const crypto=require('node:crypto'),core=require('./core.cjs'),server=require('.
 const clean=text=>String(text).replace(/^(?:(?:請|幫我|麻煩)\s*)+/,'').trim();
 const canHandle=text=>/^(?:預約功能|綁定預約|新增預約|查預約|今天.*預約|明天.*預約|查看預約|修改預約|取消預約|恢復預約|確認預約|放棄預約|預約紀錄)/.test(clean(text));
 function parseDate(text){
+  text=String(text).split(/備註/)[0];
   if(/今天|明天|後天/.test(text)){const offset=text.includes('後天')?2:text.includes('明天')?1:0;return new Date(Date.parse(core.today()+'T12:00:00Z')+offset*86400000).toISOString().slice(0,10);}
   const full=text.match(/(?:^|[^\d])(\d{4})(?:[-/年](\d{1,2})[-/月](\d{1,2})日?|(\d{2})(\d{2}))(?!\d)/);if(full){const date=full[1]+'-'+(full[2]||full[4]).padStart(2,'0')+'-'+(full[3]||full[5]).padStart(2,'0');if(core.dateOK(date))return date;}
   return null;
@@ -21,11 +22,12 @@ function appendStaged(document,booking,status=booking.status){
   const next=core.clone(document);next.bookings.push({...booking,status});core.validateSchedule(next);return next;
 }
 function parseNew(text){
+  const main=text.split(/備註/)[0];
   const date=parseDate(text),time=parseTime(text);if(!date||!time)core.fail('請提供明確日期與時間，例如「新增預約 明天 15:00 身體60分鐘 2人 指定1,2 備註王先生」');
-  const count=Number(text.match(/(\d+)\s*人/)?.[1]||1),body=service(text,'身體')||0,foot=service(text,'腳底')||0;
+  const count=Number(main.match(/(\d+)\s*人/)?.[1]||1),body=service(text,'身體')||0,foot=service(text,'腳底')||0;
   if(!body&&!foot)core.fail('請指定服務與分鐘，例如「身體60分鐘」或「腳底40分鐘」');
   if(count<1||count>20)core.fail('每筆預約人數須為1至20人');
-  const specified=text.match(/指定\s*([\d,，、\s]+)/)?.[1]?.trim().split(/[,，、\s]+/).filter(Boolean)||[];
+  const specified=main.match(/指定\s*([\d,，、\s]+)/)?.[1]?.trim().split(/[,，、\s]+/).filter(Boolean)||[];
   if(specified.length&&specified.length!==count)core.fail('指定師傅數量須與人數一致；不指定請省略「指定」');
   return {date,time,guests:Array.from({length:count},(_,i)=>({bodyMinutes:body,footMinutes:foot,staff:specified[i]||''})),note:text.match(/備註[：:]?\s*([\s\S]+)$/)?.[1]||''};
 }
