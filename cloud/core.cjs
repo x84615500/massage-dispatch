@@ -45,6 +45,7 @@ function saveBooking(state,input,existingId){
   if(existingId&&index<0)fail('找不到預約',404);
   const old=index>=0?next.bookings[index]:null;
   const booking={id:old?.id||'B-'+crypto.randomUUID().slice(0,8).toUpperCase(),date:input.date??old?.date,time:input.time??old?.time,guests:input.guests??old?.guests,note:input.note??old?.note??'',status:input.status??old?.status??'pending',customerName:input.customerName??old?.customerName??'',customerPhone:input.customerPhone??old?.customerPhone??''};
+  if(old?.createdBy)booking.createdBy=old.createdBy;if(old?.customerEmail)booking.customerEmail=old.customerEmail;
   if(typeof booking.customerName!=='string'||booking.customerName.length>100||typeof booking.customerPhone!=='string'||booking.customerPhone.length>40)fail('客人姓名或電話格式錯誤');
   if(booking.date<today()&&!existingId)fail('不能新增過去日期的預約');
   if(booking.status==='confirmed'&&!next.rosters[booking.date]?.confirmed)fail('請先確認當日班表，再確認預約',409);
@@ -62,4 +63,3 @@ function previewPurge(state,before){
 function purge(state,preview){const next=clone(state),bookings=new Set(preview.bookingIds),jobs=new Set(preview.jobIds);next.bookings=next.bookings.filter(b=>!bookings.has(b.id));next.jobs=next.jobs.filter(j=>!jobs.has(j.id));const used=new Set([...next.bookings.map(b=>b.date),...next.jobs.map(j=>j.date)]);for(const d of Object.keys(next.rosters))if(d<preview.before&&!used.has(d))delete next.rosters[d];return validateSchedule(next);}
 function bookingText(b){return `${b.id}｜${b.date} ${b.time}｜${b.guests.length}人｜${b.status==='confirmed'?'已確認':b.status==='cancelled'?'已取消':'待確認'}\n`+b.guests.map((g,i)=>`${i+1}. ${g.staff?g.staff+'號':'不指定'}｜身體${body(g)}分鐘／腳底${foot(g)}分鐘`).join('\n')+(b.customerName?'\n客人：'+b.customerName:'')+(b.note?'\n備註：'+b.note:'');}
 module.exports={BookingError,fail,clone,dateOK,timeOK,today,minutes,body,foot,duration,validate,feasible,validateSchedule,saveBooking,cancelBooking,previewPurge,purge,bookingText};
-

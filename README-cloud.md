@@ -43,7 +43,27 @@ LINE可一次傳多行，每行一筆，最多10筆，也可連續傳送新增�
 
 API 與 LINE 後端放在 line-ai-bot 的 Vercel 專案；GitHub Pages 只提供網頁及 cloud/browser.js。
 
-cloud/schema.sql 建立狀態、版本、去重、操作紀錄、LINE身分與短期確認資料表。原 JSON 保留在 PostgreSQL JSONB，適用目前單一管理者。資料表開啟RLS，anon/authenticated 無讀寫權限；後端才持有服務密鑰。API 每次向 Supabase Auth 驗證已確認信箱並比對 BOOKING_OWNER_EMAIL。
+cloud/schema.sql 建立狀態、版本、去重、操作紀錄、LINE身分與短期確認資料表。原 JSON 保留在 PostgreSQL JSONB。資料表開啟RLS，anon/authenticated 無直接讀寫權限；後端才持有服務密鑰。API 每次向 Supabase Auth 驗證已確認信箱並比對 BOOKING_OWNER_EMAIL；只有該管理者可存取完整文件。
+
+## 管理者與客戶登入
+
+- 登入欄輸入 `0978566521` 後按寄送，前端會改填 `x84615500@gmail.com` 再送出。號碼只用來代填，仍須收信驗證；不是密碼或權限依據。一般客戶直接輸入信箱。
+- 由 Supabase Auth `/user` 的已驗證信箱決定角色，管理者信箱比對忽略大小寫；不採信瀏覽器或 user_metadata 提供的角色。
+- 客戶僅可呼叫 read、customerCreate、customerDelete。read 只傳今日與未來未取消預約的日期、時間與療程；僅自己的列包含可刪除ID。其他客戶ID、姓名、電話、信箱、備註、指定師傅、班表、工作與操作紀錄均不傳送。
+- 客戶新增預約由後端產生ID，固定待確認，createdBy 固定使用已驗證的 Supabase user ID。已知的舊預約不會依備註或姓名猜測歸屬。
+- 客戶刪除必須在後端比對 createdBy；以取消狀態保留管理者稽核，從公開與客戶畫面移除。管理者／LINE改期與確認均保留原建立者。
+- 管理者 saveState 會還原既有預約的 createdBy、customerEmail，不能因前端漏傳或竄改而改變客戶歸屬。
+- 權限資料沿用現有 JSONB，無須新增資料表或執行結構遷移。
+- 新增測試：cloud/test-customer.cjs、cloud/test-customer-browser.cjs。後者使用實際 API handler 與角色檢查、隔離的模擬 Auth／資料庫，無寄出真信或LINE訊息。
+
+## 客戶登入信上線前置
+
+Supabase 內建寄信服務只能寄給專案團隊成員；一般客戶必須設定 custom SMTP。保持信箱確認開啟，不可用取消信箱驗證來規避。可用現有 Gmail SMTP（smtp.gmail.com、587、使用 Gmail 完整信箱與應用程式密碼），需帳號本人開啟兩步驟驗證並建立應用程式密碼，再於 Supabase Authentication → Emails → SMTP Settings 設定。不要將應用程式密碼放在前端、Git、聊天或這份說明。
+
+參考：
+- https://supabase.com/docs/guides/auth/auth-smtp
+- https://support.google.com/mail/answer/185833?hl=zh-Hant
+- https://support.google.com/a/answer/176600?hl=zh-Hant
 
 版本CAS與請求ID去重防止兩端覆蓋及重複確認；衝突時需重新讀取，不靜默覆寫。
 
@@ -61,5 +81,3 @@ cloud/schema.sql 建立狀態、版本、去重、操作紀錄、LINE身分與�
 
 
 登入信箱欄位使用電子郵件鍵盤設定，並在本機瀏覽器記住上次輸入的有效信箱；清空欄位即可移除記住的信箱。只記住信箱，不會因而取得登入權限。
-
-

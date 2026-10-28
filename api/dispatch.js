@@ -10,10 +10,11 @@ module.exports=async(req,res)=>{
     const s=server.settings();
     if(req.method==='GET'&&req.query?.config==='1')return res.status(200).json({url:s.url||'',publicKey:s.publicKey||'',enabled:Boolean(s.url&&s.key&&s.email)});
     if(req.method==='GET'&&req.query?.schedule==='1')return res.status(200).json(await server.publicSchedule());
-    const token=String(req.headers.authorization||'').replace(/^Bearer /,'');const actor=await server.owner(token);
+    const token=String(req.headers.authorization||'').replace(/^Bearer /,'');const user=await server.identity(token);
     const body=req.method==='GET'?{action:'read'}:typeof req.body==='string'?JSON.parse(req.body):req.body;
     if(!body||Buffer.byteLength(JSON.stringify(body))>1024*1024)return res.status(413).json({error:'資料過大'});
-    return res.status(200).json(await server.operation(body,'web:'+actor));
+    if(user.role==='customer')return res.status(200).json(await server.customerOperation(body,user));
+    const value=await server.operation(body,'web:'+user.id);if(body.action==='read')value.role='admin';
+    return res.status(200).json(value);
   }catch(error){console.error('Dispatch API failed',Number.isInteger(error.status)?error.status:500);return res.status(error.status||500).json({error:error.status?error.message:'預約服務暫時無法使用，請稍後重試'});}
 };
-

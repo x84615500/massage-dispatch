@@ -7,12 +7,16 @@ async function request(path,options={}){
   const text=await response.text();let result;try{result=text?JSON.parse(text):null;}catch{core.fail('預約資料庫回應異常',502);}
   if(!response.ok){if(result?.code==='40001')core.fail('資料已被其他操作更新，請重新讀取後再試',409);core.fail('預約資料庫暫時無法處理，請稍後重試',502);}return result;
 }
-async function owner(token){
+async function identity(token){
   if(!token)core.fail('請先登入預約管理',401);const s=settings();
   if(!s.email)core.fail('管理者尚未設定',503);
   const response=await fetch(s.url+'/auth/v1/user',{headers:{apikey:s.publicKey||s.key,Authorization:'Bearer '+token},signal:AbortSignal.timeout(6500)});
   if(!response.ok)core.fail('登入已過期，請重新登入',401);const user=await response.json();
-  if(!user.email_confirmed_at||user.email?.toLowerCase()!==s.email)core.fail('只有管理者可操作',403);return user.id;
+  if(!user.id||typeof user.email!=='string'||!user.email_confirmed_at)core.fail('請先驗證登入信箱',403);
+  const email=user.email.trim().toLowerCase();return {id:user.id,email,role:email===s.email?'admin':'customer'};
+}
+async function owner(token){
+  const user=await identity(token);if(user.role!=='admin')core.fail('只有管理者可操作',403);return user.id;
 }
 async function state(){const rows=await request('/rest/v1/dispatch_state?id=eq.1&select=revision,document');if(!rows?.[0])core.fail('預約資料表尚未建立',503);core.validate(rows[0].document);return rows[0];}
 async function commit(current,document,requestId,actor,action){
@@ -69,6 +73,38 @@ async function publicSchedule(){
   const rows=current.document.bookings.filter(b=>b.date>=today&&b.status!=='cancelled').sort((a,b)=>(a.date+a.time).localeCompare(b.date+b.time));
   return {today,bookings:rows.slice(0,500).map(b=>({date:b.date,time:b.time,people:b.guests.length,status:b.status,services:b.guests.map(g=>({bodyMinutes:core.body(g),footMinutes:core.foot(g),staff:g.staff||''}))})),truncated:rows.length>500};
 }
+function customerSchedule(current,user){
+  const today=core.today();
+  // Only a customer's own rows carry an identifier. No ownership or contact fields leave this boundary.
+  const rows=current.document.bookings.filter(b=>b.date>=today&&b.status!=='cancelled').sort((a,b)=>(a.date+a.time).localeCompare(b.date+b.time));
+  const own=rows.filter(b=>b.createdBy===user.id),others=rows.filter(b=>b.createdBy!==user.id);
+  const show=b=>({date:b.date,time:b.time,services:b.guests.map(g=>({bodyMinutes:core.body(g),footMinutes:core.foot(g)})),...(b.createdBy===user.id?{id:b.id,mine:true}:{})});
+  return {role:'customer',today,bookings:[...own,...others.slice(0,500)].sort((a,b)=>(a.date+a.time).localeCompare(b.date+b.time)).map(show),truncated:others.length>500};
+}
+async function customerOperation(body,user){
+  if(!['read','customerCreate','customerDelete'].includes(body.action))core.fail('客戶只能新增或刪除自己的預約',403);
+  const current=await state();if(body.action==='read')return customerSchedule(current,user);
+  let document=core.clone(current.document),added;
+  if(body.action==='customerCreate'){
+    const input=body.booking;
+    if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).some(k=>!['date','time','guests','note','customerName','customerPhone'].includes(k)))core.fail('預約欄位不正確');
+    if(!Array.isArray(input.guests)||input.guests.some(g=>!g||Object.keys(g).some(k=>!['bodyMinutes','footMinutes','staff'].includes(k))))core.fail('服務欄位不正確');
+    const result=core.saveBooking(document,{...input,status:'pending'});document=result.state;added=result.booking;added.createdBy=user.id;
+    added.customerEmail=user.email;
+  }else{
+    const row=document.bookings.find(b=>b.id===body.id);
+    // Use the same response for missing and foreign identifiers.
+    if(!row||row.createdBy!==user.id)core.fail('只能刪除自己新增的預約',403);
+    if(row.status==='cancelled')return customerSchedule(current,user);
+    if(row.date<core.today())core.fail('過去的預約請聯絡管理者處理',409);
+    document=core.cancelBooking(document,row.id).state;
+  }
+  const saved=await commit(current,document,body.requestId,'customer:'+user.id,added?'客戶新增預約':'客戶刪除自己的預約');
+  const response=customerSchedule(saved,user);
+  if(added){response.notification=await notifyBookings(saved,[added.id],body.requestId);response.message='預約已新增，等待管理者確認。';}
+  else response.message='已刪除自己的預約。';
+  return response;
+}
 async function operation(body,actor){
   const current=await state();
   if(body.action==='read')return current;
@@ -84,6 +120,7 @@ async function operation(body,actor){
     if([...previous.keys()].some(id=>!body.document?.bookings?.some(b=>b.id===id)))core.fail('既有預約請使用取消；永久刪除需走清理流程');
     core.validate(body.document);
     const added=body.document.bookings.filter(b=>!previous.has(b.id));
+    for(const b of body.document.bookings){const old=previous.get(b.id);if(old){if(old.createdBy)b.createdBy=old.createdBy;else delete b.createdBy;if(old.customerEmail)b.customerEmail=old.customerEmail;else delete b.customerEmail;}else{delete b.createdBy;delete b.customerEmail;}}
     if(added.some(b=>b.status!=='pending'))core.fail('網頁新增預約一律先存為待確認');
     for(const b of body.document.bookings)if(b.status==='confirmed'&&JSON.stringify(b)!==JSON.stringify(previous.get(b.id))&&!body.document.rosters[b.date]?.confirmed)core.fail('新增或修改已確認預約前，請先確認班表',409);
     const oldJobs=new Set(current.document.jobs.map(j=>j.id));for(const j of body.document.jobs)if(!oldJobs.has(j.id)&&!body.document.rosters[j.date]?.confirmed)core.fail('開始工作前，請先確認班表',409);
@@ -116,5 +153,4 @@ async function operation(body,actor){
   }
   core.fail('不支援的預約操作');
 }
-module.exports={settings,request,owner,state,commit,sign,unsign,bindingCode,bindLine,lineOwner,operation,hash,confirmBookings,notifyBookings,publicSchedule,confirmationRequestId};
-
+module.exports={settings,request,identity,owner,state,commit,sign,unsign,bindingCode,bindLine,lineOwner,operation,hash,confirmBookings,notifyBookings,publicSchedule,confirmationRequestId,customerSchedule,customerOperation};

@@ -2,19 +2,36 @@
 const crypto=require('node:crypto'),core=require('./core.cjs'),server=require('./server.cjs');
 const clean=text=>String(text).replace(/^(?:(?:請|幫我|麻煩)\s*)+/,'').trim();
 const canHandle=text=>/^(?:預約功能|綁定預約|新增預約|查預約|今天.*預約|明天.*預約|查看預約|修改預約|取消預約|恢復預約|確認預約|放棄預約|預約紀錄)/.test(clean(text));
+const normalize=text=>String(text).normalize('NFKC').replace(/備注/g,'備註');
+const numberToken='[0-9零〇一二兩三四五六七八九十百]+';
+function numeral(value){
+  if(/^\d+$/.test(value))return Number(value);
+  const digits={'零':0,'〇':0,'一':1,'二':2,'兩':2,'三':3,'四':4,'五':5,'六':6,'七':7,'八':8,'九':9};
+  if(value.includes('百'))return NaN;
+  if(value.includes('十')){const parts=value.split('十');return parts.length===2?(parts[0]?digits[parts[0]]:1)*10+(parts[1]?digits[parts[1]]:0):NaN;}
+  return Number([...value].map(c=>digits[c]).join(''));
+}
+const mainText=text=>normalize(text).split(/備註/)[0];
 function parseDate(text){
-  text=String(text).split(/備註/)[0];
+  text=mainText(text);
   if(/今天|明天|後天/.test(text)){const offset=text.includes('後天')?2:text.includes('明天')?1:0;return new Date(Date.parse(core.today()+'T12:00:00Z')+offset*86400000).toISOString().slice(0,10);}
   const full=text.match(/(?:^|[^\d])(\d{4})(?:[-/年](\d{1,2})[-/月](\d{1,2})日?|(\d{2})(\d{2}))(?!\d)/);if(full){const date=full[1]+'-'+(full[2]||full[4]).padStart(2,'0')+'-'+(full[3]||full[5]).padStart(2,'0');if(core.dateOK(date))return date;}
+  const short=text.match(new RegExp('('+numberToken+')月('+numberToken+')[日號]'));
+  if(short){const date=core.today().slice(0,4)+'-'+String(numeral(short[1])).padStart(2,'0')+'-'+String(numeral(short[2])).padStart(2,'0');return core.dateOK(date)?date:null;}
   return null;
 }
 function parseTime(text){
   // Strip booking ID, date, services and note before accepting a bare HHmm token.
-  const source=text.replace(/^(?:修改預約|查看預約|取消預約|恢復預約)\s+\S+/,'').split(/備註/)[0].replace(/\d{4}(?:[-/年]\d{1,2}[-/月]\d{1,2}日?|\d{4})/g,'').replace(/(?:身體|腳底)\s*\d+\s*(?:分鐘?|單位)?/g,'');
-  const match=source.match(/(?:上午|下午|晚上|中午)?\s*(\d{1,2})(?:[:：](\d{2})|點(?:(\d{1,2})分?)?)/)||source.match(/(?:^|[^\d])(\d{2})(\d{2})(?!\d)/);if(!match)return null;
-  let hour=Number(match[1]);if(/下午|晚上/.test(match[0])&&hour<12)hour+=12;if(/上午/.test(match[0])&&hour===12)hour=0;const result=String(hour).padStart(2,'0')+':'+String(match[2]||match[3]||'00').padStart(2,'0');return core.timeOK(result)?result:null;
+  const source=mainText(text).replace(/^(?:修改預約|查看預約|取消預約|恢復預約)\s+\S+/,'').replace(/\d{4}(?:[-/年]\d{1,2}[-/月]\d{1,2}[日號]?|\d{4})/g,'').replace(new RegExp('(?:身體|按摩|腳底)\\s*'+numberToken+'\\s*(?:分鐘?|單位)?','g'),'').replace(new RegExp('指定\\s*'+numberToken+'(?:\\s*號?\\s*[,、]\\s*'+numberToken+')*\\s*號?','g'),'').replace(new RegExp(numberToken+'\\s*人','g'),'');
+  const spoken=source.match(new RegExp('(凌晨|早上|上午|下午|晚上|中午)?\\s*('+numberToken+')[點时時](?:(半|一刻|三刻)|\\s*('+numberToken+')分?)?'));
+  const numeric=spoken?null:source.match(/(?<!\d)(?:凌晨|早上|上午|下午|晚上|中午)?\s*(\d{1,2}):(\d{2})(?!\d)/)||source.match(/(?:^|[^\d])(\d{2})(\d{2})(?!\d)/);
+  if(!spoken&&!numeric)return null;
+  let hour=spoken?numeral(spoken[2]):Number(numeric[1]),minute=spoken?(spoken[4]?numeral(spoken[4]):({'半':30,'一刻':15,'三刻':45}[spoken[3]]||0)):Number(numeric[2]);
+  const period=spoken?.[1]||numeric?.[0].match(/凌晨|早上|上午|下午|晚上|中午/)?.[0];if(period&&(hour<1||hour>12))return null;
+  if(/下午|晚上|中午/.test(period)&&hour<12)hour+=12;if(/上午|早上|凌晨/.test(period)&&hour===12)hour=0;
+  const result=String(hour).padStart(2,'0')+':'+String(minute).padStart(2,'0');return core.timeOK(result)?result:null;
 }
-function service(text,name){const match=text.split(/備註/)[0].match(new RegExp(name+'\\s*(\\d+)\\s*(分鐘?|單位)?'));if(!match)return null;const n=Number(match[1]);return name==='身體'&&(!match[2]||match[2]==='單位')?n*10:n;}
+function service(text,name){const match=mainText(text).match(new RegExp('('+(name==='身體'?'身體|按摩':name)+')\\s*('+numberToken+')\\s*(分鐘?|單位)?'));if(!match)return null;const n=numeral(match[2]);return match[1]==='身體'&&(!match[3]||match[3]==='單位')?n*10:n;}
 function appendStaged(document,booking,status=booking.status){
   if(booking.date<core.today())core.fail('待確認預約日期已過，請重新新增',409);
   if(document.bookings.some(b=>b.id===booking.id))core.fail('待確認的預約編號已存在，請先查詢核對',409);
@@ -22,16 +39,20 @@ function appendStaged(document,booking,status=booking.status){
   const next=core.clone(document);next.bookings.push({...booking,status});core.validateSchedule(next);return next;
 }
 function parseNew(text){
-  const main=text.split(/備註/)[0];
-  const date=parseDate(text),time=parseTime(text);if(!date||!time)core.fail('請提供明確日期與時間，例如「新增預約 明天 15:00 身體60分鐘 2人 指定1,2 備註王先生」');
-  const count=Number(main.match(/(\d+)\s*人/)?.[1]||1),body=service(text,'身體')||0,foot=service(text,'腳底')||0;
+  text=normalize(text);const main=mainText(text);
+  let date=parseDate(main);if(!date&&/今天|明天|後天|年|月|\d{8}|\d+[-/]\d+/.test(main))core.fail('日期無效，請使用今天、明天、10月30日或20261031');
+  date=date||core.today();const time=parseTime(main);if(!time)core.fail('請提供明確且有效的時間，例如「下午兩點35分」或「1435」');
+  const count=numeral(main.match(new RegExp('('+numberToken+')\\s*人'))?.[1]||'1'),body=service(text,'身體')||0,foot=service(text,'腳底')||0;
   if(!body&&!foot)core.fail('請指定服務與分鐘，例如「身體60分鐘」或「腳底40分鐘」');
   if(count<1||count>20)core.fail('每筆預約人數須為1至20人');
-  const specified=main.match(/指定\s*([\d,，、\s]+)/)?.[1]?.trim().split(/[,，、\s]+/).filter(Boolean)||[];
+  const staffText=main.replace(/不指定/g,'');
+  const specified=[...staffText.matchAll(new RegExp('指定\\s*('+numberToken+'(?:\\s*號?\\s*[,、]\\s*'+numberToken+')*)\\s*號?','g'))].flatMap(m=>m[1].split(/\s*[,、]\s*/).map(s=>String(numeral(s.replace(/號/g,'').trim()))));
+  if(/指定/.test(staffText)&&!specified.length)core.fail('請提供指定師傅號碼，例如「指定6號」，或輸入「不指定」');
+  if(main.includes('不指定')&&specified.length)core.fail('請擇一輸入「不指定」或指定師傅號碼');
   if(specified.length&&specified.length!==count)core.fail('指定師傅數量須與人數一致；不指定請省略「指定」');
   return {date,time,guests:Array.from({length:count},(_,i)=>({bodyMinutes:body,footMinutes:foot,staff:specified[i]||''})),note:text.match(/備註[：:]?\s*([\s\S]+)$/)?.[1]||''};
 }
-function help(){return '預約管理（僅限已綁定管理者私訊）\n新增預約\n20261031 1335 身體9腳底40 備註王先生\n20261031 1600 身體6 備註林小姐\n每行一筆，最多10筆；也可分次傳送「新增預約」累加。身體9＝90分鐘；腳底40＝40分鐘。\n查預約 今天／明天／20261031\n查看預約 B-編號\n修改預約 B-編號 明天 1600\n取消預約 B-編號\n恢復預約 B-編號\n確認預約：一次確認目前列出的整批\n放棄預約\n預約紀錄\n網頁待確認預約可送到LINE確認；正式確認仍需班表與容量允許。';}
+function help(){return '預約管理（僅限已綁定管理者私訊）\n新增預約，明天，下午兩點35分，按摩90分鐘，指定6號，備註林小姐\n日期可用今天、明天、10月30號、10月30日或20261031；未寫日期就是台灣今天，月日未寫年份採今年。未寫人數＝1人；未指定師傅＝不指定；未寫備註＝留白。按摩90分鐘＝身體90分鐘。\n也支援簡寫：新增預約 20261031 1335 身體9腳底40\n每行一筆，最多10筆；也可分次傳送「新增預約」累加。身體9＝90分鐘；腳底40＝40分鐘。\n查預約 今天／明天／20261031\n查看預約 B-編號\n修改預約 B-編號 明天 1600\n取消預約 B-編號\n恢復預約 B-編號\n確認預約：核對內容後一次確認目前列出的整批\n放棄預約\n預約紀錄\n網頁待確認預約可送到LINE確認；正式確認仍需班表與容量允許。';}
 async function draft(actor,current,document,summary,extra={}){
   const code=crypto.randomBytes(4).toString('hex').slice(0,6).toUpperCase(),requestId=crypto.randomUUID();
   await server.request('/rest/v1/dispatch_pending?on_conflict=actor',{method:'POST',headers:{Prefer:'resolution=merge-duplicates'},body:JSON.stringify({actor,code,payload:{revision:current.revision,document,summary,requestId,...extra},expires_at:new Date(Date.now()+10*60000).toISOString()})});
@@ -85,6 +106,3 @@ async function handleLine(event,text){
   }catch(error){return error.status?error.message:'預約服務暫時無法使用，這次未確認成功；請稍後查詢預約核對。';}
 }
 module.exports={canHandle,parseDate,parseTime,parseNew,help,handleLine};
-
-
-
