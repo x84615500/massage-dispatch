@@ -1,10 +1,11 @@
+// Legacy scheduling/backup UI harness; cloud auth and public access are tested in cloud/test-upgrade-browser.cjs.
 let playwright;try{playwright=require('playwright')}catch{playwright=require('C:/Users/x8461/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright')}const {chromium}=playwright;
 const fs=require('fs'),assert=require('assert/strict');
 (async()=>{
 
  const browser=await chromium.launch({headless:true,channel:'chrome'});const results=[];
  async function test(name,run){if(process.env.MASSAGE_TEST_FILTER&&!name.includes(process.env.MASSAGE_TEST_FILTER))return;const context=await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true});
- await context.route('https://massage.test/**',route=>route.fulfill({contentType:route.request().url().endsWith('cloud/browser.js')?'application/javascript':'text/html; charset=utf-8',body:fs.readFileSync(__dirname+(route.request().url().endsWith('cloud/browser.js')?'/cloud/browser.js':'/index.html'),'utf8')}));await context.route('https://line-ai-bot-swart.vercel.app/api/dispatch**',route=>route.fulfill({json:{enabled:false}}));const page=await context.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));
+ await context.route('https://massage.test/**',route=>route.fulfill({contentType:route.request().url().endsWith('cloud/browser.js')?'application/javascript':'text/html; charset=utf-8',body:route.request().url().endsWith('cloud/browser.js')?'document.body.classList.remove("dispatch-locked")':fs.readFileSync(__dirname+'/index.html','utf8')}));await context.route('https://line-ai-bot-swart.vercel.app/api/dispatch**',route=>route.fulfill({json:{enabled:false}}));const page=await context.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));
  await page.addInitScript(()=>{const NativeDate=Date;window.Date=class extends NativeDate{constructor(...args){super(...(args.length?args:['2026-10-23T14:00:00']))}static now(){return new NativeDate('2026-10-23T14:00:00').valueOf()}};window.testTimers=[];window.setInterval=fn=>{window.testTimers.push(fn);return 1}});
  try{await run(page);assert.deepEqual(errors,[]);results.push('PASS '+name)}catch(e){results.push('FAIL '+name+': '+e.message);process.exitCode=1}finally{await context.close()}}
  const url='https://massage.test/';
@@ -184,7 +185,7 @@ const choose=(p,id,value)=>p.locator('#'+id+' input[value='+value+']').check();
  await seed(p,original);const before=await p.evaluate(()=>localStorage.getItem('massage-dispatch-01'));
  await p.evaluate(()=>{const original=URL.createObjectURL.bind(URL);URL.createObjectURL=blob=>{window.exportBlob=blob;return original(blob)};HTMLAnchorElement.prototype.click=function(){window.exportDownload={name:this.download,url:this.href}}});
 await click(p,'export-data');const request=await p.evaluate(()=>window.exportDownload);assert.match(request.name,/^massage-dispatch-2026-10-23-1400\.json$/);assert.ok(request.url.startsWith('blob:'));
-const exported=JSON.parse(await p.evaluate(()=>window.exportBlob.text()));assert.equal(exported.app,'massage-dispatch');assert.equal(exported.schemaVersion,1);assert.equal(exported.appVersion,'v0.1.15');assert.ok(exported.exportedAt);assert.deepEqual(exported.data,original);assert.equal(await p.evaluate(()=>localStorage.getItem('massage-dispatch-01')),before);
+const exported=JSON.parse(await p.evaluate(()=>window.exportBlob.text()));assert.equal(exported.app,'massage-dispatch');assert.equal(exported.schemaVersion,1);assert.equal(exported.appVersion,'v0.3.0');assert.ok(exported.exportedAt);assert.deepEqual(exported.data,original);assert.equal(await p.evaluate(()=>localStorage.getItem('massage-dispatch-01')),before);
  });
  await test('資料異常時不匯出假空白備份',async p=>{
  await p.addInitScript(()=>localStorage.setItem('massage-dispatch-01','{bad'));await goto(p);let count=0;p.on('download',()=>count++);await click(p,'export-data');assert.match(await p.locator('#message').innerText(),/不完整備份/);assert.equal(count,0);assert.equal(await p.evaluate(()=>localStorage.getItem('massage-dispatch-01')),'{bad');
@@ -282,6 +283,8 @@ const exported=JSON.parse(await p.evaluate(()=>window.exportBlob.text()));assert
 
  await browser.close();fs.writeFileSync(__dirname+'/test-results.txt',results.join('\n')+'\n');console.log(results.join('\n'));
 })().catch(e=>{console.error(e);process.exit(1)});
+
+
 
 
 

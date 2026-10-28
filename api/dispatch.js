@@ -9,6 +9,7 @@ module.exports=async(req,res)=>{
   try{
     const s=server.settings();
     if(req.method==='GET'&&req.query?.config==='1')return res.status(200).json({url:s.url||'',publicKey:s.publicKey||'',enabled:Boolean(s.url&&s.key&&s.email)});
+    if(req.method==='GET'&&req.query?.schedule==='1')return res.status(200).json(await server.publicSchedule());
     const token=String(req.headers.authorization||'').replace(/^Bearer /,'');const actor=await server.owner(token);
     const body=req.method==='GET'?{action:'read'}:typeof req.body==='string'?JSON.parse(req.body):req.body;
     if(!body||Buffer.byteLength(JSON.stringify(body))>1024*1024)return res.status(413).json({error:'資料過大'});

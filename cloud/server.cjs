@@ -26,19 +26,62 @@ const hash=x=>crypto.createHash('sha256').update(x).digest('hex');
 async function bindingCode(){const code=crypto.randomBytes(16).toString('hex');await request('/rest/v1/dispatch_identity?id=eq.1',{method:'PATCH',body:JSON.stringify({binding_hash:hash(code),binding_expires_at:new Date(Date.now()+10*60000).toISOString()})});return code;}
 async function bindLine(code,id){return request('/rest/v1/rpc/dispatch_bind',{method:'POST',body:JSON.stringify({p_hash:hash(code),p_line_user:id})});}
 async function lineOwner(id){const rows=await request('/rest/v1/dispatch_identity?id=eq.1&select=line_user_id');return Boolean(id&&rows?.[0]?.line_user_id===id);}
+function selectedPending(current,ids){
+  if(!Array.isArray(ids)||!ids.length||ids.length>10||new Set(ids).size!==ids.length)core.fail('請選擇1至10筆不同的預約');
+  return ids.map(id=>{const row=current.document.bookings.find(b=>b.id===id);if(!row||row.status==='cancelled')core.fail('預約不存在或已取消，請重新讀取',409);return row;});
+}
+async function confirmBookings(current,ids,requestId,actor,expected){
+  const rows=selectedPending(current,ids);let document=core.clone(current.document);
+  for(const row of rows){if(row.status==='confirmed')continue;if(expected&&expected[row.id]!==hash(JSON.stringify(row)))core.fail('預約內容已變更，請在網頁重新送LINE確認',409);document=core.saveBooking(document,{status:'confirmed'},row.id).state;}
+  if(rows.every(b=>b.status==='confirmed'))return current;
+  return commit(current,document,requestId,actor,'確認 '+rows.length+' 筆預約');
+}
+async function notifyBookings(current,ids,requestId){
+  try{
+    if(!/^[a-f0-9]{8}-[a-f0-9-]{27}$/i.test(requestId||''))core.fail('缺少有效操作編號');
+    const rows=selectedPending(current,ids).filter(b=>b.status==='pending');if(!rows.length)return {ok:false,message:'選取的預約已經確認，不需再送出'};
+    const identity=await request('/rest/v1/dispatch_identity?id=eq.1&select=line_user_id'),lineId=identity?.[0]?.line_user_id;
+    if(!lineId||!process.env.LINE_CHANNEL_ACCESS_TOKEN)return {ok:false,message:'尚未完成LINE綁定，預約已保留，請先綁定後再送出'};
+    const actor='line:'+lineId,existing=await request('/rest/v1/dispatch_pending?actor=eq.'+encodeURIComponent(actor)+'&select=code,payload,expires_at');
+    const active=existing?.[0]&&Date.parse(existing[0].expires_at)>Date.now(),oldPayload=existing?.[0]?.payload;
+    const same=oldPayload?.kind==='confirm-existing'&&oldPayload.ids.length===rows.length&&rows.every(b=>oldPayload.ids.includes(b.id)&&oldPayload.expected?.[b.id]===hash(JSON.stringify(b)));
+    if(active&&!same)return {ok:false,message:'LINE有其他待確認內容，這次未送通知。請先確認或放棄，再從網頁重新送出；新增預約仍保留'};
+    const selected=rows;
+    const code=crypto.randomBytes(4).toString('hex').slice(0,6).toUpperCase();
+    const summary=selected.map(b=>core.bookingText({...b,note:b.note.slice(0,100)})).join('\n\n');
+    await request('/rest/v1/dispatch_pending?on_conflict=actor',{method:'POST',headers:{Prefer:'resolution=merge-duplicates'},body:JSON.stringify({actor,code,payload:{kind:'confirm-existing',ids:selected.map(b=>b.id),expected:Object.fromEntries(selected.map(b=>[b.id,hash(JSON.stringify(b))])),requestId,summary},expires_at:new Date(Date.now()+10*60000).toISOString()})});
+    const message='網頁有 '+selected.length+' 筆待確認預約：\n'+summary+'\n\n核對後回覆「確認預約」，將一次確認以上全部，10分鐘內有效。回覆「放棄預約」只放棄本次確認，網頁預約仍保留。';
+    const messages=[];let remaining=message;while(remaining){let end=Math.min(4500,remaining.length);if(end<remaining.length&&/[\uD800-\uDBFF]/.test(remaining[end-1]))end--;messages.push({type:'text',text:remaining.slice(0,end)});remaining=remaining.slice(end);}
+    if(messages.length>5)core.fail('預約內容過長，請減少筆數後再送出');
+    const response=await fetch('https://api.line.me/v2/bot/message/push',{method:'POST',headers:{Authorization:'Bearer '+process.env.LINE_CHANNEL_ACCESS_TOKEN,'Content-Type':'application/json','X-Line-Retry-Key':requestId},body:JSON.stringify({to:lineId,messages}),signal:AbortSignal.timeout(6500)});
+    if(!response.ok&&!(response.status===409&&response.headers?.get('x-line-accepted-request-id')))return {ok:false,message:response.status===429?'LINE訊息額度或頻率限制，尚未確認通知成功，請稍後重送或直接在網頁確認':'LINE通知未成功，請稍後重送或直接在網頁確認'};
+    return {ok:true,message:'已送出LINE確認通知（是否送達仍受封鎖／好友狀態影響），預約仍為待確認'};
+  }catch(error){return {ok:false,message:error.status?error.message:'LINE通知暫時失敗，預約仍保留，可稍後重送或直接確認'};}
+}
+async function publicSchedule(){
+  const current=await state(),today=core.today();
+  const rows=current.document.bookings.filter(b=>b.date>=today&&b.status!=='cancelled').sort((a,b)=>(a.date+a.time).localeCompare(b.date+b.time));
+  return {today,bookings:rows.slice(0,500).map(b=>({date:b.date,time:b.time,people:b.guests.length,status:b.status,services:b.guests.map(g=>({bodyMinutes:core.body(g),footMinutes:core.foot(g)}))})),truncated:rows.length>500};
+}
 async function operation(body,actor){
   const current=await state();
   if(body.action==='read')return current;
   if(body.action==='binding')return {code:await bindingCode()};
+  if(body.action==='confirmBookings')return confirmBookings(current,body.ids,body.requestId,actor);
+  if(body.action==='notifyBookings')return {notification:await notifyBookings(current,body.ids,body.requestId)};
   if(body.action==='saveState'){
     if(body.revision!==current.revision)core.fail('資料已更新，請重新整理後再修改',409);
     const previous=new Map(current.document.bookings.map(b=>[b.id,b]));
     // Ordinary editing cancels instead of silently deleting existing records.
     if([...previous.keys()].some(id=>!body.document?.bookings?.some(b=>b.id===id)))core.fail('既有預約請使用取消；永久刪除需走清理流程');
     core.validate(body.document);
+    const added=body.document.bookings.filter(b=>!previous.has(b.id));
+    if(added.some(b=>b.status!=='pending'))core.fail('網頁新增預約一律先存為待確認');
     for(const b of body.document.bookings)if(b.status==='confirmed'&&JSON.stringify(b)!==JSON.stringify(previous.get(b.id))&&!body.document.rosters[b.date]?.confirmed)core.fail('新增或修改已確認預約前，請先確認班表',409);
     const oldJobs=new Set(current.document.jobs.map(j=>j.id));for(const j of body.document.jobs)if(!oldJobs.has(j.id)&&!body.document.rosters[j.date]?.confirmed)core.fail('開始工作前，請先確認班表',409);
-    return commit(current,body.document,body.requestId,actor,'網頁更新班表／預約／工作');
+    const saved=await commit(current,body.document,body.requestId,actor,'網頁更新班表／預約／工作');
+    if(added.length)saved.notification=await notifyBookings(saved,added.map(b=>b.id),body.requestId);
+    return saved;
   }
   if(body.action==='purgePreview'){
     const preview=core.previewPurge(current.document,body.before);
@@ -65,5 +108,5 @@ async function operation(body,actor){
   }
   core.fail('不支援的預約操作');
 }
-module.exports={settings,request,owner,state,commit,sign,unsign,bindingCode,bindLine,lineOwner,operation,hash};
+module.exports={settings,request,owner,state,commit,sign,unsign,bindingCode,bindLine,lineOwner,operation,hash,confirmBookings,notifyBookings,publicSchedule};
 
