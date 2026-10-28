@@ -67,8 +67,10 @@ async function operation(body,actor){
   const current=await state();
   if(body.action==='read')return current;
   if(body.action==='binding')return {code:await bindingCode()};
-  if(body.action==='confirmBookings')return confirmBookings(current,body.ids,body.requestId,actor);
-  if(body.action==='notifyBookings')return {notification:await notifyBookings(current,body.ids,body.requestId)};
+  if(body.action==='confirmBookings'||body.action==='notifyBookings'){
+    if(body.revision!==current.revision)core.fail('資料已更新，請重新讀取雲端後再確認或送出',409);
+    return body.action==='confirmBookings'?confirmBookings(current,body.ids,body.requestId,actor):{notification:await notifyBookings(current,body.ids,body.requestId)};
+  }
   if(body.action==='saveState'){
     if(body.revision!==current.revision)core.fail('資料已更新，請重新整理後再修改',409);
     const previous=new Map(current.document.bookings.map(b=>[b.id,b]));

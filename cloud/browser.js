@@ -29,7 +29,7 @@ async function refresh(){if(window.DispatchLocalBridge.editing())throw Error('�
 function action(id,task){$(id).onclick=async()=>{if(adapter.pending)return;try{await task();}catch(error){result(error.message);}};}
 // Prevent a second local mutation while a write is pending.
 for(const type of ['click','submit'])document.addEventListener(type,event=>{if(!adapter.active&&!panel.contains(event.target)&&!publicPanel.contains(event.target)){event.preventDefault();event.stopImmediatePropagation();return;}if(adapter.pending&&!panel.contains(event.target)){event.preventDefault();event.stopImmediatePropagation();status('上一筆仍在儲存，請稍候。');}},true);
-document.addEventListener('click',async event=>{const button=event.target.closest('button[data-sendline],button[data-confirm]');if(!button||!adapter.active)return;event.preventDefault();event.stopImmediatePropagation();if(adapter.pending)return;adapter.pending=true;button.disabled=true;try{const id=button.dataset.sendline||button.dataset.confirm;const value=await api({action:button.dataset.sendline?'notifyBookings':'confirmBookings',ids:[id],requestId:crypto.randomUUID()});if(value.notification)result(value.notification.message);else{await refresh();result('預約已直接確認。');}}catch(error){result(error.message);}finally{adapter.pending=false;button.disabled=false;}},true);
+document.addEventListener('click',async event=>{const button=event.target.closest('button[data-sendline],button[data-confirm]');if(!button||!adapter.active)return;event.preventDefault();event.stopImmediatePropagation();if(adapter.pending)return;adapter.pending=true;button.disabled=true;try{const id=button.dataset.sendline||button.dataset.confirm;const value=await api({action:button.dataset.sendline?'notifyBookings':'confirmBookings',ids:[id],revision,requestId:crypto.randomUUID()});if(value.notification)result(value.notification.message);else{await refresh();result('預約已直接確認。');}}catch(error){result(error.message);}finally{adapter.pending=false;button.disabled=false;}},true);
 $('cloud-login').onsubmit=async event=>{event.preventDefault();try{if(!config?.enabled)throw Error('雲端預約尚未設定完成');const email=$('cloud-email').value.trim();const loginState=crypto.randomUUID();localStorage.setItem('dispatch-login-state',JSON.stringify({nonce:loginState,at:Date.now()}));const redirect=location.origin+location.pathname+'?login_state='+encodeURIComponent(loginState);const r=await fetch(config.url+'/auth/v1/otp?redirect_to='+encodeURIComponent(redirect),{method:'POST',headers:{apikey:config.publicKey,'Content-Type':'application/json'},body:JSON.stringify({email,create_user:true})});if(!r.ok)throw Error(r.status===429?'登入信寄送次數已達限制，請稍後再寄，並使用最新一封信':'登入信未寄出，請確認信箱後稍後重試');result('請開啟信箱中的登入連結，回到本網頁後會驗證管理者身分。');}catch(error){result(error.message);}};
 action('cloud-refresh',refresh);
 action('cloud-bind',async()=>{const value=await api({action:'binding'});result('請在LINE私訊機器人貼上（10分鐘內有效）：\n綁定預約 '+value.code+'\n請勿分享綁定碼。');});
@@ -45,6 +45,7 @@ async function init(){try{const r=await fetch(API+'?config=1',{signal:AbortSigna
 readPublic();
 init();
 })();
+
 
 
 
