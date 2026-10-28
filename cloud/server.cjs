@@ -61,7 +61,7 @@ async function notifyBookings(current,ids,requestId){
 async function publicSchedule(){
   const current=await state(),today=core.today();
   const rows=current.document.bookings.filter(b=>b.date>=today&&b.status!=='cancelled').sort((a,b)=>(a.date+a.time).localeCompare(b.date+b.time));
-  return {today,bookings:rows.slice(0,500).map(b=>({date:b.date,time:b.time,people:b.guests.length,status:b.status,services:b.guests.map(g=>({bodyMinutes:core.body(g),footMinutes:core.foot(g)}))})),truncated:rows.length>500};
+  return {today,bookings:rows.slice(0,500).map(b=>({date:b.date,time:b.time,people:b.guests.length,status:b.status,services:b.guests.map(g=>({bodyMinutes:core.body(g),footMinutes:core.foot(g),staff:g.staff||''}))})),truncated:rows.length>500};
 }
 async function operation(body,actor){
   const current=await state();
