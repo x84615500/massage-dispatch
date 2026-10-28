@@ -30,11 +30,17 @@ function selectedPending(current,ids){
   if(!Array.isArray(ids)||!ids.length||ids.length>10||new Set(ids).size!==ids.length)core.fail('請選擇1至10筆不同的預約');
   return ids.map(id=>{const row=current.document.bookings.find(b=>b.id===id);if(!row||row.status==='cancelled')core.fail('預約不存在或已取消，請重新讀取',409);return row;});
 }
+function confirmationRequestId(notificationRequestId){
+  const value=hash('dispatch-confirm-v1:'+notificationRequestId).slice(0,32);
+  return value.slice(0,8)+'-'+value.slice(8,12)+'-5'+value.slice(13,16)+'-8'+value.slice(17,20)+'-'+value.slice(20);
+}
 async function confirmBookings(current,ids,requestId,actor,expected){
   const rows=selectedPending(current,ids);let document=core.clone(current.document);
   for(const row of rows){if(row.status==='confirmed')continue;if(expected&&expected[row.id]!==hash(JSON.stringify(row)))core.fail('預約內容已變更，請在網頁重新送LINE確認',409);document=core.saveBooking(document,{status:'confirmed'},row.id).state;}
   if(rows.every(b=>b.status==='confirmed'))return current;
-  return commit(current,document,requestId,actor,'確認 '+rows.length+' 筆預約');
+  const saved=await commit(current,document,requestId,actor,'確認 '+rows.length+' 筆預約');
+  if(rows.some(row=>saved?.document?.bookings?.find(b=>b.id===row.id)?.status!=='confirmed'))core.fail('雲端未完成確認，預約仍待確認，請重新送LINE確認',409);
+  return saved;
 }
 async function notifyBookings(current,ids,requestId){
   try{
@@ -110,5 +116,5 @@ async function operation(body,actor){
   }
   core.fail('不支援的預約操作');
 }
-module.exports={settings,request,owner,state,commit,sign,unsign,bindingCode,bindLine,lineOwner,operation,hash,confirmBookings,notifyBookings,publicSchedule};
+module.exports={settings,request,owner,state,commit,sign,unsign,bindingCode,bindLine,lineOwner,operation,hash,confirmBookings,notifyBookings,publicSchedule,confirmationRequestId};
 

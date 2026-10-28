@@ -13,6 +13,12 @@ test('PostgreSQL schema enforces CAS, idempotency and private permissions',async
  const {PGlite}=require('@electric-sql/pglite'),db=new PGlite();await db.exec('create role anon; create role authenticated; create role service_role;');await db.exec(fs.readFileSync(__dirname+'/schema.sql','utf8'));
  const document=empty(),id='12345678-1234-4234-8234-123456789012';const result=await db.query('select dispatch_commit($1,$2::jsonb,$3::uuid,$4,$5) as value',[0,JSON.stringify(document),id,'test','新增']);assert.equal(result.rows[0].value.revision,1);
  const duplicate=await db.query('select dispatch_commit($1,$2::jsonb,$3::uuid,$4,$5) as value',[0,JSON.stringify(document),id,'test','新增']);assert.equal(duplicate.rows[0].value.duplicate,true);
+ const saved=core.saveBooking(document,{...input(),status:'pending'}),saveId='42345678-1234-4234-8234-123456789012';
+ await db.query('select dispatch_commit($1,$2::jsonb,$3::uuid,$4,$5)',[1,JSON.stringify(saved.state),saveId,'web','新增待確認']);
+ const confirmed=core.saveBooking(saved.state,{status:'confirmed'},saved.booking.id).state;
+ const wronglyReused=await db.query('select dispatch_commit($1,$2::jsonb,$3::uuid,$4,$5) as value',[2,JSON.stringify(confirmed),saveId,'line','確認']);assert.equal(wronglyReused.rows[0].value.document.bookings[0].status,'pending');
+ const confirmationId=require('./server.cjs').confirmationRequestId(saveId);
+ const actuallyConfirmed=await db.query('select dispatch_commit($1,$2::jsonb,$3::uuid,$4,$5) as value',[2,JSON.stringify(confirmed),confirmationId,'line','確認']);assert.equal(actuallyConfirmed.rows[0].value.document.bookings[0].status,'confirmed');assert.equal(actuallyConfirmed.rows[0].value.revision,3);
  await assert.rejects(db.query('select dispatch_commit($1,$2::jsonb,$3::uuid,$4,$5)',[0,JSON.stringify(document),'22345678-1234-4234-8234-123456789012','test','衝突']),/REVISION_CONFLICT/);
  await db.exec('set role anon');await assert.rejects(db.query('select * from dispatch_state'),/permission denied/);await assert.rejects(db.query("select dispatch_commit(1,'{}','32345678-1234-4234-8234-123456789012','x','x')"),/permission denied/);await db.close();
 });

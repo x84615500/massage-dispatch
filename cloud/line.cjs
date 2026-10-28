@@ -51,15 +51,15 @@ async function handleLine(event,text){
     if(text.startsWith('確認預約')){
       const code=text.replace(/^確認預約\s*/,'').trim().toUpperCase();const rows=await server.request('/rest/v1/dispatch_pending?actor=eq.'+encodeURIComponent(actor)+'&select=code,payload,expires_at');const pending=rows?.[0];
       if(!pending||(code&&pending.code!==code)||Date.parse(pending.expires_at)<Date.now())return '沒有有效的待確認操作，或已過期，請重新提出預約操作。';
-      const payload=pending.payload;let completionSummary=payload.summary;
-      if(payload.kind==='confirm-existing'){const saved=await server.confirmBookings(await server.state(),payload.ids,payload.requestId,actor,payload.expected);completionSummary=payload.ids.map(id=>core.bookingText(saved.document.bookings.find(b=>b.id===id))).join('\n\n');}
+      const payload=pending.payload;let completionSummary=payload.summary,pendingCount=0;
+      if(payload.kind==='confirm-existing'){const saved=await server.confirmBookings(await server.state(),payload.ids,server.confirmationRequestId(payload.requestId),actor,payload.expected);completionSummary=payload.ids.map(id=>core.bookingText(saved.document.bookings.find(b=>b.id===id))).join('\n\n');}
       else if(payload.kind==='create-batch'){
         const current=await server.state();let document=core.clone(current.document);
         for(const booking of payload.bookings){const existing=document.bookings.find(b=>b.id===booking.id);if(existing){if(JSON.stringify({...existing,status:booking.status})!==JSON.stringify(booking))core.fail('待確認預約內容已變，請先查詢核對',409);continue;}document=appendStaged(document,booking,current.document.rosters[booking.date]?.confirmed?'confirmed':'pending');}
-        const saved=await server.commit(current,document,payload.requestId,actor,payload.summary);const actual=saved?.document||document;completionSummary=payload.bookings.map(b=>core.bookingText(actual.bookings.find(row=>row.id===b.id))).join('\n\n');
+        const saved=await server.commit(current,document,payload.requestId,actor,payload.summary);const actual=saved?.document||document;pendingCount=payload.bookings.filter(b=>actual.bookings.find(row=>row.id===b.id)?.status==='pending').length;completionSummary=payload.bookings.map(b=>core.bookingText(actual.bookings.find(row=>row.id===b.id))).join('\n\n');
       }else await server.commit({revision:payload.revision},payload.document,payload.requestId,actor,payload.summary);
       await server.request('/rest/v1/dispatch_pending?actor=eq.'+encodeURIComponent(actor)+'&code=eq.'+encodeURIComponent(pending.code),{method:'DELETE'});
-      return '已成功寫入雲端，網頁重新讀取雲端即可看到；若列為待確認，仍須先完成當日班表。\n'+completionSummary;
+      return (pendingCount?'已存入雲端，但有'+pendingCount+'筆因當日班表尚未確認，仍未正式確認。請先在網頁確認班表，再按「直接確認」或「送 LINE 確認」。':'已成功寫入雲端。請在網頁預約標籤按「重新讀取雲端」查看最新狀態。')+'\n'+completionSummary;
     }
     if(text==='預約紀錄'){const rows=await server.request('/rest/v1/dispatch_audit?select=action,created_at&order=created_at.desc&limit=10');return rows.length?rows.map(r=>new Date(r.created_at).toLocaleString('zh-TW',{timeZone:'Asia/Taipei'})+' '+r.action).join('\n'):'尚無操作紀錄。';}
     const current=await server.state();
@@ -85,5 +85,6 @@ async function handleLine(event,text){
   }catch(error){return error.status?error.message:'預約服務暫時無法使用，這次未確認成功；請稍後查詢預約核對。';}
 }
 module.exports={canHandle,parseDate,parseTime,parseNew,help,handleLine};
+
 
 
