@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.3.0",
   "scripts": {
-    "test:core": "node --test cloud/test-core.cjs cloud/test-server.cjs cloud/test-line.cjs cloud/test-upgrade.cjs cloud/test-customer.cjs",
+    "test:core": "node --test cloud/test-core.cjs cloud/test-server.cjs cloud/test-line.cjs cloud/test-upgrade.cjs cloud/test-customer.cjs cloud/test-admission.cjs",
     "test:cloud": "node --test cloud/test-browser.cjs cloud/test-upgrade-browser.cjs cloud/test-customer-browser.cjs",
     "test:ui": "node test-cloud-regression.cjs"
   },

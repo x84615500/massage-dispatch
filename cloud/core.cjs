@@ -26,10 +26,10 @@ function validate(state){
   const jobIDs=new Set();for(const j of state.jobs){if(!j||typeof j.id!=='string'||jobIDs.has(j.id)||!dateOK(j.date)||!idOK(j.staff)||!Number.isFinite(j.start)||j.start<0||j.start>=1440||!serviceOK(j))fail('工作紀錄格式錯誤');jobIDs.add(j.id);}
   return state;
 }
-function feasible(state,date){
+function feasible(state,date,includePending=false){
   const roster=state.rosters[date];
   const tasks=[];
-  for(const b of state.bookings)if(b.date===date&&b.status==='confirmed')for(const g of b.guests)tasks.push({start:minutes(b.time),end:minutes(b.time)+duration(g)+10,staff:g.staff});
+  for(const b of state.bookings)if(b.date===date&&(b.status==='confirmed'||includePending&&b.status==='pending'))for(const g of b.guests)tasks.push({start:minutes(b.time),end:minutes(b.time)+duration(g)+10,staff:g.staff});
   for(const j of state.jobs)if(j.date===date)tasks.push({start:j.start,end:j.start+duration(j)+10,staff:j.staff});
   if(!tasks.length)return true;
   if(!roster)fail('預約或工作缺少當日班表',409);
@@ -40,6 +40,15 @@ function feasible(state,date){
   if(!solve(0))fail('時段衝突或人力不足，包含服務後10分鐘整理',409);return true;
 }
 function validateSchedule(state){validate(state);const dates=new Set([...state.bookings.filter(b=>b.status==='confirmed').map(b=>b.date),...state.jobs.map(j=>j.date)]);for(const date of dates)feasible(state,date);return state;}
+function admitBookings(state,ids){
+  validate(state);const dates=new Set();for(const id of ids){const row=state.bookings.find(b=>b.id===id);if(!row||row.status==='cancelled')continue;dates.add(row.date);}
+  for(const date of dates){if(!state.rosters[date]?.confirmed)fail('這天班表尚未確認，暫時無法預約，請選擇其他日期或聯絡管理者',409);feasible(state,date,true);}return state;
+}
+function admitChanges(next,previous){
+  const old=new Map(previous.bookings.map(b=>[b.id,b]));
+  const slot=b=>JSON.stringify([b.date,b.time,b.guests]);
+  return admitBookings(next,next.bookings.filter(b=>{const before=old.get(b.id);return b.status!=='cancelled'&&(!before||before.status==='cancelled'||slot(before)!==slot(b)||before.status!==b.status);}).map(b=>b.id));
+}
 function saveBooking(state,input,existingId){
   const next=clone(state);const index=existingId?next.bookings.findIndex(b=>b.id===existingId):-1;
   if(existingId&&index<0)fail('找不到預約',404);
@@ -62,4 +71,4 @@ function previewPurge(state,before){
 }
 function purge(state,preview){const next=clone(state),bookings=new Set(preview.bookingIds),jobs=new Set(preview.jobIds);next.bookings=next.bookings.filter(b=>!bookings.has(b.id));next.jobs=next.jobs.filter(j=>!jobs.has(j.id));const used=new Set([...next.bookings.map(b=>b.date),...next.jobs.map(j=>j.date)]);for(const d of Object.keys(next.rosters))if(d<preview.before&&!used.has(d))delete next.rosters[d];return validateSchedule(next);}
 function bookingText(b){return `${b.id}｜${b.date} ${b.time}｜${b.guests.length}人｜${b.status==='confirmed'?'已確認':b.status==='cancelled'?'已取消':'待確認'}\n`+b.guests.map((g,i)=>`${i+1}. ${g.staff?g.staff+'號':'不指定'}｜身體${body(g)}分鐘／腳底${foot(g)}分鐘`).join('\n')+(b.customerName?'\n客人：'+b.customerName:'')+(b.note?'\n備註：'+b.note:'');}
-module.exports={BookingError,fail,clone,dateOK,timeOK,today,minutes,body,foot,duration,validate,feasible,validateSchedule,saveBooking,cancelBooking,previewPurge,purge,bookingText};
+module.exports={BookingError,fail,clone,dateOK,timeOK,today,minutes,body,foot,duration,validate,feasible,validateSchedule,admitBookings,admitChanges,saveBooking,cancelBooking,previewPurge,purge,bookingText};

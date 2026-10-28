@@ -1,7 +1,7 @@
 const test=require('node:test'),assert=require('node:assert/strict'),crypto=require('node:crypto'),core=require('./core.cjs'),server=require('./server.cjs'),handler=require('../api/dispatch.js');
 process.env.SUPABASE_URL='https://test.supabase.co';process.env.SUPABASE_SECRET_KEY='secret';process.env.SUPABASE_PUBLISHABLE_KEY='public';process.env.BOOKING_OWNER_EMAIL='x84615500@gmail.com';
 const users={admin:{id:'admin-id',email:'X84615500@GMAIL.COM',email_confirmed_at:'2026-01-01'},alice:{id:'alice-id',email:'alice@example.com',email_confirmed_at:'2026-01-01'},bob:{id:'bob-id',email:'bob@example.com',email_confirmed_at:'2026-01-01'},unverified:{id:'not-verified',email:'x84615500@gmail.com',user_metadata:{role:'admin'}}};
-function setup(){let current={revision:0,document:{rosters:{},jobs:[],bookings:[]}},writes=0;const requests=new Set();
+function setup(){let current={revision:0,document:{rosters:{'2099-01-01':{confirmed:true,people:[{id:'1',from:'09:00',to:'23:59'}]}},jobs:[],bookings:[]}},writes=0;const requests=new Set();
 global.fetch=async(url,options={})=>{const path=new URL(url).pathname;if(path==='/auth/v1/user'){const token=options.headers.Authorization.replace('Bearer ','');return {ok:!!users[token],json:async()=>users[token]};}
 const input=options.body?JSON.parse(options.body):null;let value;
 if(path.endsWith('/dispatch_state'))value=[current];

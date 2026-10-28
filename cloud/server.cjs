@@ -42,6 +42,7 @@ async function confirmBookings(current,ids,requestId,actor,expected){
   const rows=selectedPending(current,ids);let document=core.clone(current.document);
   for(const row of rows){if(row.status==='confirmed')continue;if(expected&&expected[row.id]!==hash(JSON.stringify(row)))core.fail('預約內容已變更，請在網頁重新送LINE確認',409);document=core.saveBooking(document,{status:'confirmed'},row.id).state;}
   if(rows.every(b=>b.status==='confirmed'))return current;
+  core.admitBookings(document,rows.map(b=>b.id));
   const saved=await commit(current,document,requestId,actor,'確認 '+rows.length+' 筆預約');
   if(rows.some(row=>saved?.document?.bookings?.find(b=>b.id===row.id)?.status!=='confirmed'))core.fail('雲端未完成確認，預約仍待確認，請重新送LINE確認',409);
   return saved;
@@ -89,7 +90,7 @@ async function customerOperation(body,user){
     const input=body.booking;
     if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).some(k=>!['date','time','guests','note','customerName','customerPhone'].includes(k)))core.fail('預約欄位不正確');
     if(!Array.isArray(input.guests)||input.guests.some(g=>!g||Object.keys(g).some(k=>!['bodyMinutes','footMinutes','staff'].includes(k))))core.fail('服務欄位不正確');
-    const result=core.saveBooking(document,{...input,status:'pending'});document=result.state;added=result.booking;added.createdBy=user.id;
+    const result=core.saveBooking(document,{...input,status:'pending'});document=result.state;added=result.booking;core.admitBookings(document,[added.id]);added.createdBy=user.id;
     added.customerEmail=user.email;
   }else{
     const row=document.bookings.find(b=>b.id===body.id);
@@ -122,6 +123,7 @@ async function operation(body,actor){
     const added=body.document.bookings.filter(b=>!previous.has(b.id));
     for(const b of body.document.bookings){const old=previous.get(b.id);if(old){if(old.createdBy)b.createdBy=old.createdBy;else delete b.createdBy;if(old.customerEmail)b.customerEmail=old.customerEmail;else delete b.customerEmail;}else{delete b.createdBy;delete b.customerEmail;}}
     if(added.some(b=>b.status!=='pending'))core.fail('網頁新增預約一律先存為待確認');
+    core.admitChanges(body.document,current.document);
     for(const b of body.document.bookings)if(b.status==='confirmed'&&JSON.stringify(b)!==JSON.stringify(previous.get(b.id))&&!body.document.rosters[b.date]?.confirmed)core.fail('新增或修改已確認預約前，請先確認班表',409);
     const oldJobs=new Set(current.document.jobs.map(j=>j.id));for(const j of body.document.jobs)if(!oldJobs.has(j.id)&&!body.document.rosters[j.date]?.confirmed)core.fail('開始工作前，請先確認班表',409);
     const saved=await commit(current,body.document,body.requestId,actor,'網頁更新班表／預約／工作');
