@@ -11,9 +11,22 @@ test('all user examples route to deterministic availability with explicit minimu
   for(const text of ['查詢天氣','查詢，今天6號新聞','查詢，台北按摩推薦'])assert.equal(line.isAvailabilityQuery(text),false,text);
   assert.throws(()=>line.parseAvailability('查詢，下午3:75，有誰可以工作？',clock),/有效時間/);assert.throws(()=>line.parseAvailability('查詢，2月30日，6號，可以預約嗎？',clock),/日期無效/);
 });
-test('Taiwan server clock handles UTC date boundary and rounds now up to the next minute',()=>{
-  assert.deepEqual(available.taiwanClock(new Date('2026-10-28T16:00:00Z')),{today:'2026-10-29',minute:0});
-  assert.deepEqual(available.taiwanClock(new Date('2026-10-29T07:15:01Z')),{today:'2026-10-29',minute:916});
+test('Taiwan server clock preserves current minute and actual seconds across the UTC date boundary',()=>{
+  assert.deepEqual(available.taiwanClock(new Date('2026-10-28T16:00:00Z')),{today:'2026-10-29',minute:0,second:0});
+  assert.deepEqual(available.taiwanClock(new Date('2026-10-29T07:15:01Z')),{today:'2026-10-29',minute:915,second:1});
+});
+test('current-minute queries start at real current seconds, while future ranges start at the next whole minute',()=>{
+  const s=empty(),now={today:date,minute:915,second:30};let row=available.inspect(s,{date,time:'15:15',staff:'6'},now).rows[0];assert.equal(row.available,true);assert.equal(row.ranges[0].start,916);assert.equal(row.maxMinutes,390);
+  assert.throws(()=>available.inspect(s,{date,time:'15:14',staff:'6'},now),/已過/);
+  s.bookings.push(booking('next','15:45','6'));row=available.inspect(s,{date,time:'15:15',staff:'6'},now).rows[0];assert.equal(row.available,false,'must not pretend a 15:15:30 request starts at 15:15:00');
+  const closing=available.inspect(empty(),{date,time:'21:30',staff:'6'},{today:date,minute:1290,second:30}).rows[0];assert.equal(closing.available,false);
+});
+test('maximum durations follow bookable body, foot and combined service increments',()=>{
+  const s=empty();for(const [bodyMinutes,footMinutes,expected] of [[20,0,330],[0,40,325],[90,55,335]]){
+    const result=available.inspect(s,{date,time:'16:12',staff:'6',bodyMinutes,footMinutes},clock).rows[0];assert.equal(result.maxMinutes,expected);
+    const guests=[{staff:'6',bodyMinutes:bodyMinutes?result.maxMinutes-footMinutes:0,footMinutes:bodyMinutes?footMinutes:result.maxMinutes}];
+    const booked=core.saveBooking(s,{date,time:'16:12',status:'pending',guests});assert.doesNotThrow(()=>core.admitBookings(booked.state,[booked.booking.id]));
+  }
 });
 test('pending and confirmed bookings plus real work block availability, cancelled rows release capacity',()=>{
   const s=empty();s.bookings=[booking('p','15:00','6')];let q={date,time:'15:15'};

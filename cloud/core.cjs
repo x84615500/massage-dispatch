@@ -26,9 +26,9 @@ function validate(state){
   const jobIDs=new Set();for(const j of state.jobs){if(!j||typeof j.id!=='string'||jobIDs.has(j.id)||!dateOK(j.date)||!idOK(j.staff)||!Number.isFinite(j.start)||j.start<0||j.start>=1440||!serviceOK(j))fail('工作紀錄格式錯誤');jobIDs.add(j.id);}
   return state;
 }
-function feasible(state,date,includePending=false){
+function feasible(state,date,includePending=false,extraTasks=[]){
   const roster=state.rosters[date];
-  const tasks=[];
+  const tasks=[...extraTasks];
   for(const b of state.bookings)if(b.date===date&&(b.status==='confirmed'||includePending&&b.status==='pending'))for(const g of b.guests)tasks.push({start:minutes(b.time),end:minutes(b.time)+duration(g)+10,staff:g.staff});
   for(const j of state.jobs)if(j.date===date)tasks.push({start:j.start,end:j.start+duration(j)+10,staff:j.staff});
   if(!tasks.length)return true;
