@@ -5,7 +5,7 @@ async function request(path,options={}){
   const s=settings();if(!s.url||!s.key)core.fail('預約雲端尚未啟用',503);
   const response=await fetch(s.url.replace(/\/$/,'')+path,{...options,headers:{apikey:s.key,'Content-Type':'application/json',...options.headers},signal:AbortSignal.timeout(8000)});
   const text=await response.text();let result;try{result=text?JSON.parse(text):null;}catch{core.fail('預約資料庫回應異常',502);}
-  if(!response.ok){if(result?.code==='40001')core.fail('資料已被其他操作更新，請重新讀取後再試',409);core.fail('預約資料庫暫時無法處理，請稍後重試',502);}return result;
+  if(!response.ok){if(result?.code==='40001'){const error=new core.BookingError('資料已被其他操作更新，請重新讀取後再試',409);error.retryable=true;throw error;}if(result?.code==='23505'){const error=new core.BookingError('待確認內容已更新，請重試',409);error.draftConflict=true;throw error;}core.fail('預約資料庫暫時無法處理，請稍後重試',502);}return result;
 }
 async function identity(token){
   if(!token)core.fail('請先登入預約管理',401);const s=settings();
@@ -27,6 +27,32 @@ async function commit(current,document,requestId,actor,action){
 function sign(value){const key=settings().key;if(!key)core.fail('預約服務未設定',503);const data=Buffer.from(JSON.stringify({...value,expires:Date.now()+10*60000})).toString('base64url');return data+'.'+crypto.createHmac('sha256',key).update(data).digest('base64url');}
 function unsign(token){try{const [data,signature]=String(token).split('.');const expected=crypto.createHmac('sha256',settings().key).update(data).digest();const actual=Buffer.from(signature,'base64url');if(actual.length!==expected.length||!crypto.timingSafeEqual(actual,expected))throw Error();const value=JSON.parse(Buffer.from(data,'base64url'));if(value.expires<Date.now())throw Error();return value;}catch{core.fail('確認已過期或無效，請重新操作',409);}}
 const hash=x=>crypto.createHash('sha256').update(x).digest('hex');
+const canonical=x=>JSON.stringify(x,(_,v)=>v&&typeof v==='object'&&!Array.isArray(v)?Object.fromEntries(Object.keys(v).sort().map(k=>[k,v[k]])):v);
+function receipt(current,id,actor,intent){
+  if(!/^[a-f0-9]{8}-[a-f0-9-]{27}$/i.test(id||''))core.fail('缺少有效操作編號');
+  const r=current.document.receipts?.[id];if(!r)return null;
+  if(r.actor!==actor||r.digest!==hash(canonical(intent)))core.fail('操作編號已用於其他內容，請重新送出',409);return r;
+}
+function stamp(document,id,actor,intent,ids=[]){
+  const entries=Object.entries(document.receipts||{}).filter(([,r])=>r.at>Date.now()-7*86400000).slice(-2047);
+  document.receipts=Object.fromEntries(entries);document.receipts[id]={actor,digest:hash(canonical(intent)),at:Date.now(),ids};return document;
+}
+async function retryMutation(task){const until=Date.now()+12000;for(let attempt=0;;attempt++){try{return await task();}catch(error){if(!error.retryable||attempt>=15||Date.now()>until)throw error;await new Promise(resolve=>setTimeout(resolve,Math.floor(Math.random()*Math.min(400,30*(attempt+1)))+5));}}}
+async function savePending(row,expectedCode){
+  const options={method:expectedCode?'PATCH':'POST',headers:{Prefer:'return=representation'},body:JSON.stringify(row)};
+  const path='/rest/v1/dispatch_pending'+(expectedCode?'?actor=eq.'+encodeURIComponent(row.actor)+'&code=eq.'+encodeURIComponent(expectedCode):'');
+  const result=await request(path,options);if(!Array.isArray(result)||result.length!==1){const e=new core.BookingError('待確認內容已更新，請重試',409);e.draftConflict=true;throw e;}return result[0];
+}
+function applyChanges(current,changes){
+  if(!changes||typeof changes!=='object'||Object.keys(changes).some(k=>!['rosters','bookings','jobs'].includes(k)))core.fail('更新欄位不正確');
+  const next=core.clone(current);for(const type of ['rosters','bookings','jobs']){const rows=changes[type]||[];if(!Array.isArray(rows))core.fail('更新格式不正確');const seen=new Set();
+    for(const row of rows){if(!row||typeof row.id!=='string'||seen.has(row.id)||(type==='rosters'&&!core.dateOK(row.id)))core.fail('更新項目無效或重複');seen.add(row.id);const before=type==='rosters'?current.rosters[row.id]||null:current[type].find(x=>x.id===row.id)||null;
+      if(canonical(before)!==canonical(row.before))core.fail('這筆資料已被其他操作修改，請重新讀取後核對',409);
+      if(type==='bookings'&&row.after===null)core.fail('既有預約請使用取消');
+      if(type==='rosters'){if(row.after===null)delete next.rosters[row.id];else next.rosters[row.id]=row.after;}
+      else{if(row.after!==null&&row.after?.id!==row.id)core.fail('更新編號不一致');const i=next[type].findIndex(x=>x.id===row.id);if(i>=0){if(row.after===null)next[type].splice(i,1);else next[type][i]=row.after;}else if(row.after!==null)next[type].push(row.after);}
+    }}return next;
+}
 async function bindingCode(){const code=crypto.randomBytes(16).toString('hex');await request('/rest/v1/dispatch_identity?id=eq.1',{method:'PATCH',body:JSON.stringify({binding_hash:hash(code),binding_expires_at:new Date(Date.now()+10*60000).toISOString()})});return code;}
 async function bindLine(code,id){return request('/rest/v1/rpc/dispatch_bind',{method:'POST',body:JSON.stringify({p_hash:hash(code),p_line_user:id})});}
 async function lineOwner(id){const rows=await request('/rest/v1/dispatch_identity?id=eq.1&select=line_user_id');return Boolean(id&&rows?.[0]?.line_user_id===id);}
@@ -60,7 +86,7 @@ async function notifyBookings(current,ids,requestId){
     const selected=rows;
     const code=crypto.randomBytes(4).toString('hex').slice(0,6).toUpperCase();
     const summary=selected.map(b=>core.bookingText({...b,note:b.note.slice(0,100)})).join('\n\n');
-    await request('/rest/v1/dispatch_pending?on_conflict=actor',{method:'POST',headers:{Prefer:'resolution=merge-duplicates'},body:JSON.stringify({actor,code,payload:{kind:'confirm-existing',ids:selected.map(b=>b.id),expected:Object.fromEntries(selected.map(b=>[b.id,hash(JSON.stringify(b))])),requestId,summary},expires_at:new Date(Date.now()+10*60000).toISOString()})});
+    await savePending({actor,code,payload:{kind:'confirm-existing',ids:selected.map(b=>b.id),expected:Object.fromEntries(selected.map(b=>[b.id,hash(JSON.stringify(b))])),requestId,summary},expires_at:new Date(Date.now()+10*60000).toISOString()},existing?.[0]?.code||null);
     const message='網頁有 '+selected.length+' 筆待確認預約：\n'+summary+'\n\n核對後回覆「確認預約」，將一次確認以上全部，10分鐘內有效。回覆「放棄預約」只放棄本次確認，網頁預約仍保留。';
     const messages=[];let remaining=message;while(remaining){let end=Math.min(4500,remaining.length);if(end<remaining.length&&/[\uD800-\uDBFF]/.test(remaining[end-1]))end--;messages.push({type:'text',text:remaining.slice(0,end)});remaining=remaining.slice(end);}
     if(messages.length>5)core.fail('預約內容過長，請減少筆數後再送出');
@@ -82,9 +108,13 @@ function customerSchedule(current,user){
   const show=b=>({date:b.date,time:b.time,services:b.guests.map(g=>({bodyMinutes:core.body(g),footMinutes:core.foot(g)})),...(b.createdBy===user.id?{id:b.id,mine:true}:{})});
   return {role:'customer',today,bookings:[...own,...others.slice(0,500)].sort((a,b)=>(a.date+a.time).localeCompare(b.date+b.time)).map(show),truncated:others.length>500};
 }
-async function customerOperation(body,user){
-  if(!['read','customerCreate','customerDelete'].includes(body.action))core.fail('客戶只能新增或刪除自己的預約',403);
+async function customerOperationOnce(body,user){
+  if(!['read','customerCreate','customerDelete','operationStatus'].includes(body.action))core.fail('客戶只能新增或刪除自己的預約',403);
   const current=await state();if(body.action==='read')return customerSchedule(current,user);
+  if(body.action==='operationStatus'){const r=current.document.receipts?.[body.requestId];return r?.actor==='customer:'+user.id?{processed:true,...customerSchedule(current,user),message:'此操作已完成，已讀取目前雲端狀態。'}:{processed:false};}
+  const actor='customer:'+user.id,intent={action:body.action,...(body.action==='customerCreate'?{booking:body.booking}:{id:body.id})};
+  const recovered=async latest=>{const r=receipt(latest,body.requestId,actor,intent),result={...customerSchedule(latest,user),message:'此操作已完成，已讀取目前雲端狀態。'};const pending=(r?.ids||[]).filter(id=>latest.document.bookings.some(b=>b.id===id&&b.status==='pending'));if(body.action==='customerCreate'&&pending.length)result.notification=await notifyBookings(latest,pending,body.requestId);return result;};
+  if(receipt(current,body.requestId,actor,intent))return recovered(current);
   let document=core.clone(current.document),added;
   if(body.action==='customerCreate'){
     const input=body.booking;
@@ -96,37 +126,47 @@ async function customerOperation(body,user){
     const row=document.bookings.find(b=>b.id===body.id);
     // Use the same response for missing and foreign identifiers.
     if(!row||row.createdBy!==user.id)core.fail('只能刪除自己新增的預約',403);
-    if(row.status==='cancelled')return customerSchedule(current,user);
+    if(row.status==='cancelled')return {...customerSchedule(current,user),message:'這筆預約已刪除，已更新目前狀態。'};
     if(row.date<core.today())core.fail('過去的預約請聯絡管理者處理',409);
     document=core.cancelBooking(document,row.id).state;
   }
-  const saved=await commit(current,document,body.requestId,'customer:'+user.id,added?'客戶新增預約':'客戶刪除自己的預約');
+  stamp(document,body.requestId,actor,intent,added?[added.id]:[body.id]);
+  let saved;try{saved=await commit(current,document,body.requestId,actor,added?'客戶新增預約':'客戶刪除自己的預約');}catch(error){if(error.retryable)throw error;const latest=await state();if(receipt(latest,body.requestId,actor,intent))return recovered(latest);throw error;}
+  if(!receipt(saved,body.requestId,actor,intent))core.fail('操作編號已使用，請重新送出',409);
   const response=customerSchedule(saved,user);
   if(added){response.notification=await notifyBookings(saved,[added.id],body.requestId);response.message='預約已新增，等待管理者確認。';}
   else response.message='已刪除自己的預約。';
   return response;
 }
+async function customerOperation(body,user){return retryMutation(()=>customerOperationOnce(body,user));}
 async function operation(body,actor){
   const current=await state();
   if(body.action==='read')return current;
+  if(body.action==='operationStatus'){const r=current.document.receipts?.[body.requestId];return r?.actor===actor?{processed:true,...current}:{processed:false};}
   if(body.action==='binding')return {code:await bindingCode()};
   if(body.action==='confirmBookings'||body.action==='notifyBookings'){
     if(body.revision!==current.revision)core.fail('資料已更新，請重新讀取雲端後再確認或送出',409);
     return body.action==='confirmBookings'?confirmBookings(current,body.ids,body.requestId,actor):{notification:await notifyBookings(current,body.ids,body.requestId)};
   }
-  if(body.action==='saveState'){
+  if(body.action==='saveState'||body.action==='saveChanges'){
+    const intent=body.action==='saveChanges'?{action:'saveChanges',changes:body.changes}:{action:'saveState',document:{...body.document,receipts:undefined}};
+    if(receipt(current,body.requestId,actor,intent))return {...current,duplicate:true};
+    if(body.action==='saveChanges')body={...body,revision:current.revision,document:applyChanges(current.document,body.changes)};
     if(body.revision!==current.revision)core.fail('資料已更新，請重新整理後再修改',409);
     const previous=new Map(current.document.bookings.map(b=>[b.id,b]));
     // Ordinary editing cancels instead of silently deleting existing records.
     if([...previous.keys()].some(id=>!body.document?.bookings?.some(b=>b.id===id)))core.fail('既有預約請使用取消；永久刪除需走清理流程');
     core.validate(body.document);
+    body.document.receipts=current.document.receipts||{};
     const added=body.document.bookings.filter(b=>!previous.has(b.id));
     for(const b of body.document.bookings){const old=previous.get(b.id);if(old){if(old.createdBy)b.createdBy=old.createdBy;else delete b.createdBy;if(old.customerEmail)b.customerEmail=old.customerEmail;else delete b.customerEmail;}else{delete b.createdBy;delete b.customerEmail;}}
     if(added.some(b=>b.status!=='pending'))core.fail('網頁新增預約一律先存為待確認');
     core.admitChanges(body.document,current.document);
     for(const b of body.document.bookings)if(b.status==='confirmed'&&JSON.stringify(b)!==JSON.stringify(previous.get(b.id))&&!body.document.rosters[b.date]?.confirmed)core.fail('新增或修改已確認預約前，請先確認班表',409);
     const oldJobs=new Set(current.document.jobs.map(j=>j.id));for(const j of body.document.jobs)if(!oldJobs.has(j.id)&&!body.document.rosters[j.date]?.confirmed)core.fail('開始工作前，請先確認班表',409);
+    stamp(body.document,body.requestId,actor,intent,added.map(b=>b.id));
     const saved=await commit(current,body.document,body.requestId,actor,'網頁更新班表／預約／工作');
+    if(!receipt(saved,body.requestId,actor,intent))core.fail('操作編號已使用，請重新送出',409);
     if(added.length)saved.notification=await notifyBookings(saved,added.map(b=>b.id),body.requestId);
     return saved;
   }
@@ -155,4 +195,6 @@ async function operation(body,actor){
   }
   core.fail('不支援的預約操作');
 }
-module.exports={settings,request,identity,owner,state,commit,sign,unsign,bindingCode,bindLine,lineOwner,operation,hash,confirmBookings,notifyBookings,publicSchedule,confirmationRequestId,customerSchedule,customerOperation};
+const operationOnce=operation;
+async function operationWithRetry(body,actor){return body.action==='saveChanges'?retryMutation(()=>operationOnce({...body},actor)):operationOnce(body,actor);}
+module.exports={settings,request,identity,owner,state,commit,sign,unsign,bindingCode,bindLine,lineOwner,operation:operationWithRetry,hash,confirmBookings,notifyBookings,publicSchedule,confirmationRequestId,customerSchedule,customerOperation,savePending,canonical,receipt,retryMutation,applyChanges};

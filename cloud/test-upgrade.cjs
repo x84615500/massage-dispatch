@@ -1,5 +1,6 @@
 const test=require('node:test'),assert=require('node:assert/strict'),crypto=require('node:crypto'),core=require('./core.cjs'),server=require('./server.cjs'),line=require('./line.cjs'),handler=require('../api/dispatch.js');
 process.env.SUPABASE_URL='https://test.supabase.co';process.env.SUPABASE_SECRET_KEY='secret';process.env.SUPABASE_PUBLISHABLE_KEY='public';process.env.BOOKING_OWNER_EMAIL='owner@example.com';process.env.LINE_CHANNEL_ACCESS_TOKEN='line-token';
+const RealDate=Date,day=require('./core.cjs').today();global.Date=class extends RealDate{constructor(...a){super(...(a.length?a:[day+'T09:00:00+08:00']));}};
 const rid=()=>crypto.randomUUID(),event={source:{type:'user',userId:'owner'}};
 const booking=(id,date='2099-01-01',time='15:00')=>({id,date,time,guests:[{bodyMinutes:60,footMinutes:0,staff:''}],note:'private-note',customerName:'private-name',customerPhone:'private-phone',status:'pending'});
 function setup(){let current={revision:0,document:{rosters:Object.fromEntries(['2099-01-01','2099-01-02','2099-01-03'].map(date=>[date,{confirmed:true,people:['1','2'].map(id=>({id,from:'09:00',to:'23:59'}))}])),bookings:[],jobs:[]}},pending=null,commits=0,pushes=[],pushStatus=200;const requests=new Set();
@@ -8,7 +9,7 @@ function setup(){let current={revision:0,document:{rosters:Object.fromEntries(['
  if(path.endsWith('/message/push')){pushes.push(body);return {ok:pushStatus===200,status:pushStatus,headers:{get:()=>null}};}
  if(path.endsWith('/dispatch_state'))value=[current];
  else if(path.endsWith('/dispatch_identity'))value=[{line_user_id:'owner'}];
- else if(path.endsWith('/dispatch_pending')){if(options.method==='POST')pending=body;else if(options.method==='DELETE')pending=null;value=pending?[pending]:[];}
+ else if(path.endsWith('/dispatch_pending')){if(options.method==='POST'||options.method==='PATCH')pending=body;else if(options.method==='DELETE')pending=null;value=pending?[pending]:[];}
  else if(path.endsWith('/dispatch_commit')){if(requests.has(body.p_request))value={...current,duplicate:true};else{assert.equal(body.p_revision,current.revision);requests.add(body.p_request);commits++;current={revision:current.revision+1,document:body.p_document};value=current;}}
  else throw Error('unexpected '+path);
  return {ok:true,text:async()=>JSON.stringify(value)};};
@@ -29,3 +30,5 @@ test('multiline and successive LINE additions accumulate and one confirmation co
 test('batch capacity conflict aborts whole confirmation and preserves draft',async()=>{const env=setup();await line.handleLine(event,'新增預約\n20990101 1500 身體9\n20990101 1500 身體9');env.current.document.rosters['2099-01-01']={confirmed:true,people:[{id:'1',from:'11:00',to:'22:00'}]};const answer=await line.handleLine(event,'確認預約');assert(!answer.includes('成功寫入'));assert.equal(env.commits,0);assert.equal(env.current.document.bookings.length,0);assert.equal(env.pending.payload.bookings.length,2);});
 test('LINE confirmation of web pending reservations uses current roster and confirms all selected rows',async()=>{const env=setup();env.current.document.bookings=[booking('one','2099-01-01','13:00'),booking('two','2099-01-01','16:00')];await server.notifyBookings(env.current,['one','two'],rid());env.current.document.rosters['2099-01-01']={confirmed:true,people:[{id:'1',from:'11:00',to:'22:00'}]};const answer=await line.handleLine(event,'確認預約');assert.match(answer,/已確認/);assert.equal(env.commits,1);assert(env.current.document.bookings.every(b=>b.status==='confirmed'));});
 test('web-save request id cannot suppress subsequent LINE confirmation as a duplicate',async()=>{const env=setup(),saveId=rid();const document={rosters:{'2099-01-01':{confirmed:true,people:[{id:'1',from:'11:00',to:'22:00'}]}},jobs:[],bookings:[booking('one')]};await server.operation({action:'saveState',revision:0,document,requestId:saveId},'web:owner');assert.equal(env.current.document.bookings[0].status,'pending');assert.equal(env.pending.payload.requestId,saveId);assert.notEqual(server.confirmationRequestId(saveId),saveId);assert.equal(server.confirmationRequestId(saveId),server.confirmationRequestId(saveId));const answer=await line.handleLine(event,'確認預約');assert.match(answer,/已確認/);assert.equal(env.commits,2);assert.equal(env.current.document.bookings[0].status,'confirmed');assert.equal(env.pending,null);});
+
+

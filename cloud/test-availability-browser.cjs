@@ -1,4 +1,5 @@
 const fs=require('node:fs'),assert=require('node:assert/strict'),core=require('./core.cjs'),available=require('./availability.cjs'),{chromium}=require('C:/Users/x8461/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright');
+const AuditDate=Date,auditDay=core.today();global.Date=class extends AuditDate{constructor(...a){super(...(a.length?a:[auditDay+'T15:15:30+08:00']));}};
 (async()=>{const browser=await chromium.launch({headless:true,channel:'chrome'});try{
 const date=core.today(),document={rosters:{[date]:{confirmed:true,people:[{id:'6',from:'11:00',to:'22:00'}]}},jobs:[],bookings:[{id:'B-pending',date,time:'15:00',status:'pending',note:'private',guests:[{bodyMinutes:60,footMinutes:0,staff:'6'}]}]};
 const context=await browser.newContext({timezoneId:'Asia/Taipei'}),page=await context.newPage();await page.clock.install({time:new Date(date+'T11:00:00+08:00')});

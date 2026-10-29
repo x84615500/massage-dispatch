@@ -11,6 +11,11 @@ const idOK=x=>typeof x==='string'&&/^\d+$/.test(x)&&Number.isSafeInteger(Number(
 const body=x=>x.bodyMinutes===undefined?x.units*10:x.bodyMinutes;
 const foot=x=>x.footMinutes===undefined?0:x.footMinutes;
 const duration=x=>body(x)+foot(x);
+function futureStart(date,time,now=new Date()){
+  const parts=Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Taipei',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(now).map(p=>[p.type,p.value]));
+  const current=parts.year+'-'+parts.month+'-'+parts.day+' '+parts.hour+':'+parts.minute;
+  if(date+' '+time<current)fail('不能預約已經過去的日期或時間，請選擇現在或未來時段',409);
+}
 const serviceOK=x=>x&&Number.isSafeInteger(body(x))&&Number.isSafeInteger(foot(x))&&(body(x)===0||(body(x)>=20&&body(x)%10===0))&&(foot(x)===0||(foot(x)>=40&&(foot(x)-40)%15===0))&&duration(x)>0&&duration(x)<=1440;
 function validate(state){
   if(!state||typeof state!=='object'||!state.rosters||Array.isArray(state.rosters)||typeof state.rosters!=='object'||!Array.isArray(state.bookings)||!Array.isArray(state.jobs))fail('資料格式不完整');
@@ -47,7 +52,14 @@ function admitBookings(state,ids){
 function admitChanges(next,previous){
   const old=new Map(previous.bookings.map(b=>[b.id,b]));
   const slot=b=>JSON.stringify([b.date,b.time,b.guests]);
-  return admitBookings(next,next.bookings.filter(b=>{const before=old.get(b.id);return b.status!=='cancelled'&&(!before||before.status==='cancelled'||slot(before)!==slot(b)||before.status!==b.status);}).map(b=>b.id));
+  const changed=next.bookings.filter(b=>{const before=old.get(b.id);return b.status!=='cancelled'&&(!before||before.status==='cancelled'||slot(before)!==slot(b)||before.status!==b.status);});
+  for(const b of changed)futureStart(b.date,b.time);
+  admitBookings(next,changed.map(b=>b.id));
+  const touched=new Set();for(const date of new Set([...Object.keys(next.rosters),...Object.keys(previous.rosters)]))if(JSON.stringify(next.rosters[date])!==JSON.stringify(previous.rosters[date]))touched.add(date);
+  const oldJobs=new Map(previous.jobs.map(j=>[j.id,j]));for(const j of next.jobs)if(JSON.stringify(j)!==JSON.stringify(oldJobs.get(j.id)))touched.add(j.date);
+  for(const date of touched){const active=next.bookings.filter(b=>b.date===date&&b.status!=='cancelled'),work=next.jobs.some(j=>j.date===date);
+    if(active.length||work){if(!next.rosters[date])fail('這天已有預約或工作，班表調整必須保留有效班表',409);feasible(next,date,true);}}
+  return next;
 }
 function saveBooking(state,input,existingId){
   const next=clone(state);const index=existingId?next.bookings.findIndex(b=>b.id===existingId):-1;
@@ -57,6 +69,7 @@ function saveBooking(state,input,existingId){
   if(old?.createdBy)booking.createdBy=old.createdBy;if(old?.customerEmail)booking.customerEmail=old.customerEmail;
   if(typeof booking.customerName!=='string'||booking.customerName.length>100||typeof booking.customerPhone!=='string'||booking.customerPhone.length>40)fail('客人姓名或電話格式錯誤');
   if(booking.date<today()&&!existingId)fail('不能新增過去日期的預約');
+  if(booking.status!=='cancelled'&&(!old||old.status==='cancelled'||old.status!==booking.status||old.date!==booking.date||old.time!==booking.time))futureStart(booking.date,booking.time);
   if(booking.status==='confirmed'&&!next.rosters[booking.date]?.confirmed)fail('請先確認當日班表，再確認預約',409);
   if(index>=0)next.bookings[index]=booking;else next.bookings.push(booking);
   validateSchedule(next);return {state:next,booking};
@@ -71,4 +84,4 @@ function previewPurge(state,before){
 }
 function purge(state,preview){const next=clone(state),bookings=new Set(preview.bookingIds),jobs=new Set(preview.jobIds);next.bookings=next.bookings.filter(b=>!bookings.has(b.id));next.jobs=next.jobs.filter(j=>!jobs.has(j.id));const used=new Set([...next.bookings.map(b=>b.date),...next.jobs.map(j=>j.date)]);for(const d of Object.keys(next.rosters))if(d<preview.before&&!used.has(d))delete next.rosters[d];return validateSchedule(next);}
 function bookingText(b){return `${b.id}｜${b.date} ${b.time}｜${b.guests.length}人｜${b.status==='confirmed'?'已確認':b.status==='cancelled'?'已取消':'待確認'}\n`+b.guests.map((g,i)=>`${i+1}. ${g.staff?g.staff+'號':'不指定'}｜身體${body(g)}分鐘／腳底${foot(g)}分鐘`).join('\n')+(b.customerName?'\n客人：'+b.customerName:'')+(b.note?'\n備註：'+b.note:'');}
-module.exports={BookingError,fail,clone,dateOK,timeOK,today,minutes,body,foot,duration,validate,feasible,validateSchedule,admitBookings,admitChanges,saveBooking,cancelBooking,previewPurge,purge,bookingText};
+module.exports={BookingError,fail,clone,dateOK,timeOK,today,minutes,body,foot,duration,validate,feasible,validateSchedule,admitBookings,admitChanges,saveBooking,cancelBooking,previewPurge,purge,bookingText,futureStart};

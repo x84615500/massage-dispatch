@@ -46,6 +46,7 @@ function parseAvailability(text,clock=availability.taiwanClock()){
 }
 function appendStaged(document,booking,status=booking.status){
   if(booking.date<core.today())core.fail('待確認預約日期已過，請重新新增',409);
+  core.futureStart(booking.date,booking.time);
   if(document.bookings.some(b=>b.id===booking.id))core.fail('待確認的預約編號已存在，請先查詢核對',409);
   if(status==='confirmed'&&!document.rosters[booking.date]?.confirmed)core.fail('請先確認當日班表',409);
   const next=core.clone(document);next.bookings.push({...booking,status});core.validateSchedule(next);core.admitBookings(next,[booking.id]);return next;
@@ -65,12 +66,20 @@ function parseNew(text){
   return {date,time,guests:Array.from({length:count},(_,i)=>({bodyMinutes:body,footMinutes:foot,staff:specified[i]||''})),note:text.match(/備註[：:]?\s*([\s\S]+)$/)?.[1]||''};
 }
 function help(){return '預約管理（僅限已綁定管理者私訊）\n新增預約，明天，下午兩點35分，按摩90分鐘，指定6號，備註林小姐\n日期可用今天、明天、10月30號、10月30日或20261031；未寫日期就是台灣今天，月日未寫年份採今年。未寫人數＝1人；未指定師傅＝不指定；未寫備註＝留白。按摩90分鐘＝身體90分鐘。\n也支援簡寫：新增預約 20261031 1335 身體9腳底40\n每行一筆，最多10筆；也可分次傳送「新增預約」累加。身體9＝90分鐘；腳底40＝40分鐘。\n查詢，現在，有誰可以工作？\n查詢，下午3:15，有誰可以工作？\n查詢，今天，6號，可以預約嗎？\n查詢，下午3:15，6號，可以預約嗎？\n查詢，今天，6號，還有哪些時段？\n未寫療程以至少20分鐘按摩＋10分鐘整理檢查；可加「身體9腳底40」指定療程。查詢只讀，不會新增預約或占住時段。\n查預約 今天／明天／20261031\n查看預約 B-編號\n修改預約 B-編號 明天 1600\n取消預約 B-編號\n恢復預約 B-編號\n確認預約：核對內容後一次確認目前列出的整批\n放棄預約\n預約紀錄\n網頁待確認預約可送到LINE確認；正式確認仍需班表與容量允許。';}
-async function draft(actor,current,document,summary,extra={}){
-  const code=crypto.randomBytes(4).toString('hex').slice(0,6).toUpperCase(),requestId=crypto.randomUUID();
-  await server.request('/rest/v1/dispatch_pending?on_conflict=actor',{method:'POST',headers:{Prefer:'resolution=merge-duplicates'},body:JSON.stringify({actor,code,payload:{revision:current.revision,document,summary,requestId,...extra},expires_at:new Date(Date.now()+10*60000).toISOString()})});
+async function draft(actor,current,document,summary,extra={},expectedCode){
+  if(expectedCode===undefined){const rows=await server.request('/rest/v1/dispatch_pending?actor=eq.'+encodeURIComponent(actor)+'&select=code,payload,expires_at');const old=rows?.[0];if(old&&Date.parse(old.expires_at)>Date.now())core.fail('目前有其他待確認操作，請先確認或放棄，再提出新的修改或取消',409);expectedCode=old?.code||null;}
+  const code=crypto.randomBytes(8).toString('hex').toUpperCase(),requestId=crypto.randomUUID();
+  await server.savePending({actor,code,payload:{revision:current.revision,document,summary,requestId,...extra},expires_at:new Date(Date.now()+10*60000).toISOString()},expectedCode);
   return summary+'\n尚未寫入。核對整批內容後回覆「確認預約」，10分鐘內有效；或「放棄預約」。';
 }
-async function handleLine(event,text){
+function parseEdit(text,old){
+  const main=mainText(text.replace(/^修改預約\s+\S+\s*/,'')),date=parseDate(main),time=parseTime(main);
+  if(!date&&/今天|明天|後天|年|月|\d{8}|\d+[-/]\d+/.test(main))core.fail('修改日期無效，原預約未變更');
+  const timePart=main.replace(/\d{4}(?:[-/年]\d{1,2}[-/月]\d{1,2}[日號]?|\d{4})/g,'').replace(new RegExp(numberToken+'月'+numberToken+'[日號]','g'),'').replace(new RegExp('(?:身體|按摩|腳底)\\s*'+numberToken+'\\s*(?:分鐘?|單位)?','g'),'');
+  if(!time&&/[:：點]|上午|下午|晚上|中午|凌晨|早上|\d{4}/.test(timePart))core.fail('修改時間無效，原預約未變更');
+  return {date:date||old.date,time:time||old.time,hasDate:Boolean(date),hasTime:Boolean(time)};
+}
+async function handleLine(event,text,retries=0){
   text=clean(text);
   if(!canHandle(text))return null;
   if(event.source?.type!=='user')return '預約涉及客人資料，請改用私訊操作。';
@@ -80,7 +89,7 @@ async function handleLine(event,text){
     if(text.startsWith('綁定預約')){const code=text.replace(/^綁定預約\s*/,'').trim();if(!/^[a-f0-9]{32}$/.test(code))return '請先在已登入的預約網頁產生綁定碼，再貼上「綁定預約 綁定碼」。';return await server.bindLine(code,id)?'已綁定此LINE帳號，可輸入「預約功能」查看指令。':'綁定碼無效或已過期，請重新產生。';}
     if(!await server.lineOwner(id))return '此LINE帳號未獲預約管理權限，請先在登入的網頁產生綁定碼。';
     const actor='line:'+id;
-    if(text==='放棄預約'){await server.request('/rest/v1/dispatch_pending?actor=eq.'+encodeURIComponent(actor),{method:'DELETE'});return '已放棄本次待確認操作；網頁已存的待確認預約仍保留。';}
+    if(text==='放棄預約'){const rows=await server.request('/rest/v1/dispatch_pending?actor=eq.'+encodeURIComponent(actor)+'&select=code');if(rows?.[0])await server.request('/rest/v1/dispatch_pending?actor=eq.'+encodeURIComponent(actor)+'&code=eq.'+encodeURIComponent(rows[0].code),{method:'DELETE'});return '已放棄本次待確認操作；網頁已存的待確認預約仍保留。';}
     if(text.startsWith('確認預約')){
       const code=text.replace(/^確認預約\s*/,'').trim().toUpperCase();const rows=await server.request('/rest/v1/dispatch_pending?actor=eq.'+encodeURIComponent(actor)+'&select=code,payload,expires_at');const pending=rows?.[0];
       if(!pending||(code&&pending.code!==code)||Date.parse(pending.expires_at)<Date.now())return '沒有有效的待確認操作，或已過期，請重新提出預約操作。';
@@ -90,7 +99,7 @@ async function handleLine(event,text){
         const current=await server.state();let document=core.clone(current.document);
         for(const booking of payload.bookings){const existing=document.bookings.find(b=>b.id===booking.id);if(existing){if(JSON.stringify({...existing,status:booking.status})!==JSON.stringify(booking))core.fail('待確認預約內容已變，請先查詢核對',409);continue;}document=appendStaged(document,booking,current.document.rosters[booking.date]?.confirmed?'confirmed':'pending');}
         const saved=await server.commit(current,document,payload.requestId,actor,payload.summary);const actual=saved?.document||document;pendingCount=payload.bookings.filter(b=>actual.bookings.find(row=>row.id===b.id)?.status==='pending').length;completionSummary=payload.bookings.map(b=>core.bookingText(actual.bookings.find(row=>row.id===b.id))).join('\n\n');
-      }else await server.commit({revision:payload.revision},payload.document,payload.requestId,actor,payload.summary);
+      }else {const latest=await server.state();core.admitChanges(payload.document,latest.document);const saved=await server.commit({revision:payload.revision},payload.document,payload.requestId,actor,payload.summary);if(saved?.duplicate)completionSummary='這項操作先前已處理，請查詢預約確認目前狀態。';}
       await server.request('/rest/v1/dispatch_pending?actor=eq.'+encodeURIComponent(actor)+'&code=eq.'+encodeURIComponent(pending.code),{method:'DELETE'});
       return (pendingCount?'已存入雲端，但有'+pendingCount+'筆因當日班表尚未確認，仍未正式確認。請先在網頁確認班表，再按「直接確認」或「送 LINE 確認」。':'已成功寫入雲端。請在網頁預約標籤按「重新讀取雲端」查看最新狀態。')+'\n'+completionSummary;
     }
@@ -104,20 +113,23 @@ async function handleLine(event,text){
     if(text.startsWith('新增預約')){
       const rows=await server.request('/rest/v1/dispatch_pending?actor=eq.'+encodeURIComponent(actor)+'&select=code,payload,expires_at'),pending=rows?.[0],active=pending&&Date.parse(pending.expires_at)>Date.now();
       if(active&&pending.payload.kind!=='create-batch')return '目前有其他待確認操作，請先回覆「確認預約」或「放棄預約」，再新增一批。';
+      const eventKey=event.webhookEventId||event.message?.id,sourceId=i=>'B-'+server.hash('line-event:'+eventKey+':'+i).slice(0,16).toUpperCase();
+      if(eventKey&&current.document.bookings.some(b=>b.id===sourceId(0)))return '這則新增預約訊息先前已處理，請查詢預約核對目前狀態。';
+      if(eventKey&&active&&pending.payload.events?.includes(eventKey))return pending.payload.summary+'\n這則訊息已列入，尚未寫入；核對後回覆「確認預約」。';
       const lines=text.replace(/^新增預約\s*/,'').split(/\r?\n/).map(s=>s.trim().replace(/^新增預約\s*/,'' )).filter(Boolean),bookings=active?core.clone(pending.payload.bookings):[];
       if(!lines.length||lines.length+bookings.length>10)return '請每行輸入一筆預約，每批最多10筆。';
       let document=core.clone(current.document);
       for(const booking of bookings)document=appendStaged(document,booking);
-      for(let i=0;i<lines.length;i++){try{const input=parseNew(lines[i]);input.status=current.document.rosters[input.date]?.confirmed?'confirmed':'pending';const result=core.saveBooking(document,input);core.admitBookings(result.state,[result.booking.id]);document=result.state;bookings.push(result.booking);}catch(error){return '第'+(i+1)+'行未加入：'+(error.status?error.message:'資料格式有誤')+'。這次傳送的整批均未加入，原本待確認內容保留。';}}
-      return draft(actor,current,document,'整批新增 '+bookings.length+' 筆\n'+bookings.map(b=>core.bookingText({...b,note:b.note.slice(0,100)})).join('\n\n'),{kind:'create-batch',bookings});
+      for(let i=0;i<lines.length;i++){try{const input=parseNew(lines[i]);input.status=current.document.rosters[input.date]?.confirmed?'confirmed':'pending';const result=core.saveBooking(document,input);if(eventKey)result.booking.id=sourceId(i);core.admitBookings(result.state,[result.booking.id]);document=result.state;bookings.push(result.booking);}catch(error){return '第'+(i+1)+'行未加入：'+(error.status?error.message:'資料格式有誤')+'。這次傳送的整批均未加入，原本待確認內容保留。';}}
+      return await draft(actor,current,document,'整批新增 '+bookings.length+' 筆\n'+bookings.map(b=>core.bookingText({...b,note:b.note.slice(0,100)})).join('\n\n'),{kind:'create-batch',bookings,events:[...(active?pending.payload.events||[]:[]),...(eventKey?[eventKey]:[])]},pending?.code||null);
     }
     if(!old)return '請提供有效預約編號，例如先用「查預約 明天」查詢。';
-    if(text.startsWith('取消預約')){const result=core.cancelBooking(current.document,old.id);return draft(actor,current,result.state,'取消\n'+core.bookingText(result.booking));}
-    if(text.startsWith('恢復預約')){const status=current.document.rosters[old.date]?.confirmed?'confirmed':'pending';const result=core.saveBooking(current.document,{status},old.id);core.admitBookings(result.state,[old.id]);return draft(actor,current,result.state,'恢復\n'+core.bookingText(result.booking));}
-    if(text.startsWith('修改預約')){const date=parseDate(text)||old.date,time=parseTime(text)||old.time,body=service(text,'身體'),foot=service(text,'腳底'),guests=core.clone(old.guests);if(body!==null||foot!==null){const guest=Number(text.match(/第(\d+)位/)?.[1]||(guests.length===1?1:0));if(guest<1||guest>guests.length)return '多人預約請指定第幾位客人，例如「修改預約 '+old.id+' 第1位 身體90分鐘」。';if(body!==null)guests[guest-1].bodyMinutes=body;if(foot!==null)guests[guest-1].footMinutes=foot;}else if(!parseTime(text)&&!parseDate(text))return '請提供改期時間或服務，例如「修改預約 '+old.id+' 明天 16:00」。';const result=core.saveBooking(current.document,{date,time,guests},old.id);core.admitBookings(result.state,[old.id]);return draft(actor,current,result.state,'修改前：'+old.date+' '+old.time+'\n修改後\n'+core.bookingText(result.booking));}
+    if(text.startsWith('取消預約')){const result=core.cancelBooking(current.document,old.id);return await draft(actor,current,result.state,'取消\n'+core.bookingText(result.booking));}
+    if(text.startsWith('恢復預約')){const status=current.document.rosters[old.date]?.confirmed?'confirmed':'pending';const result=core.saveBooking(current.document,{status},old.id);core.admitBookings(result.state,[old.id]);return await draft(actor,current,result.state,'恢復\n'+core.bookingText(result.booking));}
+    if(text.startsWith('修改預約')){const parsed=parseEdit(text,old),{date,time}=parsed,body=service(text,'身體'),foot=service(text,'腳底'),guests=core.clone(old.guests);if(body!==null||foot!==null){const guest=Number(text.match(/第(\d+)位/)?.[1]||(guests.length===1?1:0));if(guest<1||guest>guests.length)return '多人預約請指定第幾位客人，例如「修改預約 '+old.id+' 第1位 身體90分鐘」。';if(body!==null)guests[guest-1].bodyMinutes=body;if(foot!==null)guests[guest-1].footMinutes=foot;}else if(!parsed.hasTime&&!parsed.hasDate)return '請提供改期時間或服務，例如「修改預約 '+old.id+' 明天 16:00」。';const result=core.saveBooking(current.document,{date,time,guests},old.id);core.admitBookings(result.state,[old.id]);return await draft(actor,current,result.state,'修改前：'+old.date+' '+old.time+'\n修改後\n'+core.bookingText(result.booking));}
     return help();
-  }catch(error){return error.status?error.message:'預約服務暫時無法使用，這次未確認成功；請稍後查詢預約核對。';}
+  }catch(error){if(error.draftConflict&&retries<4)return handleLine(event,text,retries+1);return error.status?error.message:'預約服務暫時無法使用，這次未確認成功；請稍後查詢預約核對。';}
 }
-module.exports={canHandle,parseDate,parseTime,parseNew,parseAvailability,isAvailabilityQuery,help,handleLine};
+module.exports={canHandle,parseDate,parseTime,parseNew,parseAvailability,isAvailabilityQuery,parseEdit,help,handleLine};
 
 
